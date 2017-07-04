@@ -12,6 +12,7 @@
 #include <termios.h>
 #include "em-client.h"
 #include <syslog.h>
+
 #define CONTROL_PATH "/var/xen/%s/%d/control"
 
 #include <poll.h>
@@ -29,15 +30,48 @@ emu_arg_dm,
 emu_arg_mode
 };
 
+enum operation_mode {
+   op_invalid =-1,
+   op_save    =0,
+   op_restore
+};
+
+static const char* mode_names[] = {"hvm_save", "hvm_restore", NULL};
+
 int gDomid=0;
 int gFd_in=0;
 int gFd_out=0;
 int gLive=0;
+enum operation_mode gMode=op_invalid;
 
 enum protocol {
 emp,
 qmp
 };
+
+enum stages {
+stage_enabled,
+stage_start,
+stage_init,
+stage_live,
+stage_pause,
+stage_paused,
+stage_stopcopy
+};
+
+#define XENOPSD_TIMOUT (60 * 2)
+
+#define STAGE_ENABLED  (1 << stage_enabled)
+#define STAGE_START    (1 << stage_start)
+#define STAGE_INIT     (1 << stage_init)
+#define STAGE_LIVE     (1 << stage_live)
+#define STAGE_PAUSE    (1 << stage_pause)
+#define STAGE_PAUSED   (1 << stage_paused)
+#define STAGE_STOPCOPY (1 << stage_stopcopy)
+
+#define FULL_LIVE    STAGE_START | STAGE_INIT | STAGE_LIVE  | STAGE_PAUSE | STAGE_PAUSED
+#define FULL_NONLIVE STAGE_START | STAGE_INIT | STAGE_PAUSE | STAGE_PAUSED | STAGE_STOPCOPY
+
 
 struct emu {
     char *name;
@@ -45,14 +79,22 @@ struct emu {
     char *waitfor;
     enum protocol proto;
     int enabled;
+
     int live_check;
     emu_socket_t* sock;
     int stream;
 };
-#define num_emus 2
+#define num_emus 3
+
+#define XENGUEST_ARGS  "/usr/libexec/xen/bin/xenguest -debug -domid %d -controloutfd 2 -controlinfd 0 -mode listen"
+
+
 struct emu emus[num_emus] = {
-    {"xenguest", "/usr/libexec/xen/bin/xenguest -debug -domid %d -controloutfd 2 -controlinfd 0 -mode listen -live", "Ready", emp, true  , true ,NULL,0},
-    {"vgpu"    , NULL                                                                                              , NULL   , emp, false , false,NULL,0}
+//   name      , startup               , proto, enabled, livech
+    {"xenguest", XENGUEST_ARGS, "Ready", emp, (FULL_LIVE | STAGE_ENABLED) , true  , NULL, 0},
+    {"vgpu"    , NULL         , NULL   , emp, FULL_LIVE                   , false , NULL, 0},
+    {"qemu"    , NULL         , NULL   , qmp, FULL_NONLIVE                , false , NULL, 0}
+
 };
 
 #define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
@@ -61,17 +103,35 @@ struct emu emus[num_emus] = {
 
 /* xenops interface */
 
-int do_suspend_guest_callback(void)
+
+int read_tlimit(int fd, char* buf, size_t len, int time)
+{
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    int r;
+
+    r = poll(&pfd, 1 , time * 1000);
+    if (r == 0) {
+      r = -1;
+      errno = ETIME;
+    }
+
+    if(r > 0)
+       r = read( fd, buf, len );
+    return r;
+}
+
+
+
+int send_xenopd_message(char* message)
 {
 
-    static const char suspend_message[] = "suspend:\n";
     char buf[8];
     char *sbuf;
     ssize_t len, i;
     int got_something=0;
 
 
-    emu_info("Talk to xenopsd on fds %d %d", gFd_in, gFd_out);
+    emu_info("Send '%s' to xenopsd on fds %d %d",message,  gFd_in, gFd_out);
 
     /* Check nothing waiting */
 
@@ -84,12 +144,12 @@ int do_suspend_guest_callback(void)
     }
 
 
-    write(gFd_out, suspend_message, sizeof(suspend_message)-1);
+    write(gFd_out, message, strlen(message));
 
     /* Read one line from control fd. */
     for (;;) {
 
-        len = read(gFd_in, buf, sizeof(buf));
+        len = read_tlimit(gFd_in, buf, sizeof(buf), XENOPSD_TIMOUT);
         if (len < 0 && errno == EINTR)
             continue;
         if (len < 0) {
@@ -121,11 +181,35 @@ int do_suspend_guest_callback(void)
 }
 
 
-int sent_result(void) {
+int do_suspend_guest_callback(void) {
+    return send_xenopd_message("suspend:\n");
+}
+
+int do_save_emu(int emu) {
+   char* buffer;
+   int r;
+
+   if (emu > num_emus)
+       return -1;
+
+   r = asprintf(&buffer, "prepare:%s", emus[emu].name);
+
+   if (r < 0) {
+       emu_err("asprintf failed");
+       return r;
+   }
+
+   send_xenopd_message(buffer);
+
+   free(buffer);
+   return 0;
+}
+
+
+int send_result(void) {
     static const char finished_message[] = "result:0 0\n";
     return (write(gFd_out,finished_message, sizeof(finished_message)-1)>0)?0:-1;
 }
-
 
 static int parse_int(const char *str)
 {
@@ -162,6 +246,41 @@ int find_emu(char* emu_str, char** remaining)
 }
 
 
+void get_dm_param(char* arg) {
+   int emu=-1;
+   char* param=NULL;
+
+   emu = find_emu(arg, &param);
+
+
+   if (emu < 0) {
+       emu_err("Bad DM args, Got '%s'", arg);
+       return;
+   }
+
+    emus[emu].enabled |= STAGE_ENABLED;
+
+   if (param) {
+       if (emus[emu].proto == emp) {
+           emus[emu].stream = parse_int(param);
+       } else {
+           emu_err("Bad DM args, Got '%s', refering to %d, param '%s'", optarg, emu, param);
+           emus[emu].enabled = false;
+       }
+    }
+}
+
+
+int str_lookup(const char* table[], char cmp[]) {
+    int i;
+    for (i=0; table[i]; i++) {
+        if (strcmp(table[i], cmp)==0)
+           return i;
+    }
+    return -1;
+}
+
+
 static void parse_args(int argc, char *const argv[])
 {
 
@@ -184,8 +303,6 @@ static void parse_args(int argc, char *const argv[])
 
     for(;;) {
         int arg_index = 0;
-        int emu=-1;
-        char* param=NULL;
 
         c = getopt_long_only(argc, argv, "", args, &arg_index);
 
@@ -211,15 +328,12 @@ static void parse_args(int argc, char *const argv[])
              gLive = 1;
         break;
         case emu_arg_dm:
-             emu = find_emu(optarg, &param);
-             if (emu >=0 && param) {
-                 emus[emu].stream = parse_int(param);
-                 emus[emu].enabled = true;
-             } else {
-                 emu_err("Bad DM args, Got '%s', refering to %d, param '%s'", optarg, emu, param);
-             }
+             get_dm_param(optarg);
         break;
         case emu_arg_mode:
+           gMode = str_lookup(mode_names, optarg);
+           if (gMode<0)
+               emu_err("Don't know mode  '%s'",optarg);
         break;
         }
     }
@@ -237,17 +351,17 @@ void trim(char str[], int len)
 
 /* Send messge to all emus */
 
-int broudcast(int msg)
+int pause_emus()
 {
     int i;
     int r;
     for (i=0; i< num_emus; i++) {
-        if (!emus[i].enabled)
+        if (!(emus[i].enabled & STAGE_PAUSE))
              continue;
 
-        r = em_socke_send_cmd(emus[i].sock,msg , 0);
+        r = em_socke_send_cmd(emus[i].sock,cmd_migrate_pause , 0);
         if (r < 0) {
-            emu_err("Failed to send msg %d for %s\n",msg ,emus[i].name);
+            emu_err("Failed to send pause messeg for %s\n",emus[i].name);
             return -1;
         }
     }
@@ -430,6 +544,8 @@ int emu_callback(json_object *jobj, emu_socket_t* sock)
              if (rem >=0 || iter >= 0) {
                  int ready = (sock->status == live_done);
                  emu_info("rem %d, iter %d, send %d %s", rem, iter, sent, (ready)?" Waiting":"");
+
+
                  if ((iter>0) && (rem < 50 || iter >= 4) && !ready) {
                      emu_info("criteria met - signal ready");
                     sock->status= live_done;
@@ -447,55 +563,91 @@ int emu_callback(json_object *jobj, emu_socket_t* sock)
    return 0;
 }
 
-int init_emus() {
 
-    int i;
+int open_sockets(struct emu* emu)
+{
+
     int r;
     char fname[128];
 
-    for (i=0; i< num_emus; i++) {
-        int r;
-        if (!emus[i].enabled)
-             continue;
-        snprintf(fname, 128, CONTROL_PATH, emus[i].name, gDomid); 
-        r = em_socket_alloc(&emus[i].sock, &emu_callback, &emus[i]);
-        if (r<0) {
-            emu_err("Alloc socket for %s\n", emus[i].name);
-            return -1;
-        }
-
-        r = em_socket_open(emus[i].sock, fname);
-        if (r < 0) { 
-            emu_err("Failed to connect to %s\n", emus[i].name);
-            return -1;
-        }
-
+    snprintf(fname, 128, CONTROL_PATH, emu->name, gDomid); 
+    r = em_socket_alloc(&emu->sock, &emu_callback, emu);
+    if (r<0) {
+        emu_err("Alloc socket for %s\n", emu->name);
+        return -1;
     }
 
-   for (i=0; i< num_emus; i++) {
-        if (!emus[i].enabled)
-             continue;
-
-        r = em_socke_send_cmd(emus[i].sock,cmd_migrate_init , emus[i].stream);
-        if (r < 0) {
-            emu_err("Failed to init %s\n", emus[i].name);
+    r = em_socket_open(emu->sock, fname);
+    if (r < 0) { 
+            emu_err("Failed to connect to %s\n", emu->name);
             return -1;
-        }
     }
-    r = broudcast(cmd_migrate_progress);
-    return r;
+    return 0;
 }
 
+int init_emus() {
 
+   int i;
+   int r;
+   struct emu* emu;
+
+   /* establish connection */
+
+   for (i=0; i< num_emus; i++) {
+      emu = &emus[i];
+      if (!emu->enabled)
+          continue;
+
+      switch (emu->proto) {
+      case emp:
+      case qmp:
+              if ((r = open_sockets(emu)))
+                 return r;
+        break;
+      }
+   }
+
+   /* init each emu */
+
+   for (i=0; i< num_emus; i++) {
+        emu = &emus[i];
+        if (!(emu->enabled && STAGE_INIT))
+             continue;
+
+        switch (emu->proto) {
+        case emp:
+             emu_info("Init %s with fd %d", emu->name, emu->stream);
+             r = em_socke_send_cmd(emu->sock, cmd_migrate_init , emu->stream);
+
+             if (r < 0) {
+                 emu_err("Failed to init %s\n", emu->name);
+                 return -1;
+             }
+
+             r = em_socke_send_cmd(emu->sock,cmd_migrate_progress , 0);
+
+             if (r < 0) {
+                 emu_err("Failed to request progress reporting %s\n", emu->name);
+                 return -1;
+             }
+
+        break;
+        case qmp:
+
+        break;
+        }
+   }
+   return 0;
+}
 
 int migrate_emus() {
   int i;
   int r;
 
   for (i=0; i< num_emus; i++) {
-        if (!emus[i].enabled)
+        if (!(emus[i].enabled & STAGE_LIVE))
              continue;
-
+        emu_info("Migrate live %d: %s", i, emus[i].name);
         r = em_socke_send_cmd(emus[i].sock,cmd_migrate_live , 0);
         if (r < 0) {
             emu_err("Failed to start live migrate for %s\n", emus[i].name);
@@ -510,7 +662,7 @@ int migrate_paused() {
     int i;
     int r;
     for (i=0; i< num_emus; i++) {
-        if (!emus[i].enabled)
+        if (!(emus[i].enabled & STAGE_PAUSED))
              continue;
 
         r = em_socke_send_cmd(emus[i].sock,cmd_migrate_paused , 0);
@@ -602,7 +754,7 @@ int wait_for_finished()
     while (!finished) {
         finished=1;
         for (i=0; i< num_emus; i++) {
-            if ((emus[i].enabled) && (emus[i].sock->status != all_done)) {
+            if ((emus[i].enabled & STAGE_LIVE) && (emus[i].sock->status != all_done)) {
                emu_info("Waiting for %s to finish", emus[i].name);
                finished=0;
                break;
@@ -627,24 +779,30 @@ int wait_for_ready()
     int i;
     int r;
     int waiting=1;
+    int enabled = 0;
     while (waiting) {
+        enabled = 0;
         for (i=0; i< num_emus; i++) {
-            if ((emus[i].enabled) && (emus[i].sock->status > not_done)) {
-               waiting=0;
-               continue;
+            if (emus[i].enabled & STAGE_LIVE) {
+                enabled++;
+                emu_info("%s waiting for %d: %s", (emus[i].sock->status> not_done)?"not":"", i, emus[i].name);
+                if (emus[i].sock->status > not_done)
+                    waiting=false;
             }
          }
+         if (enabled == 0)
+            waiting = false;
 
-          if (waiting) {
+         if (waiting) {
               r = wait_for_event();
 
               if (r < 0 && errno != EINTR) {
                   emu_err("Got error while waiting for events");
                   return -1;
               }
-          }
+         }
     }
-    return 0; 
+    return 0;
 }
 
 
@@ -655,40 +813,130 @@ int migrate_finish() {
 }
 
 
-int main(int argc, char *argv[])
+
+
+int save_nonlive_one_by_one()
+{
+    int i;
+    int r;
+
+    for (i=0; i< num_emus; i++) {
+        if (!(emus[i].enabled & STAGE_STOPCOPY))
+            continue;
+        emu_info("Save non-live (%d) %s", i, emus[i].name);
+
+        r = do_save_emu(i);
+        if (r < 0)
+            return r;
+
+        r = em_socke_send_cmd(emus[i].sock, cmd_migrate_nonlive , 0);
+        if (r < 0) {
+            emu_err("Failed to send msg %d for %s\n",cmd_migrate_nonlive ,emus[i].name);
+            return -1;
+        }
+
+        while (emus[i].sock->status != all_done) {
+            r = wait_for_event();
+
+            if (r < 0 && errno != EINTR) {
+                     emu_err("Got error while waiting for events");
+                     return -1;
+            }
+        }
+
+        if (emus[i].stream)
+             syncfs(emus[i].stream);
+    }
+    return 0;
+}
+
+int config_emus() {
+   int i;
+
+   // Convert live to non-live process
+
+   for (i=0; i < num_emus; i++) {
+
+        if (emus[i].enabled & STAGE_ENABLED) {
+            emu_info("emu %s enabled", emus[i].name);
+            if (!gLive) 
+               emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) & ~STAGE_LIVE;
+
+        } else {
+            emus[i].enabled = 0;
+        }
+   }
+   return 0;
+}
+
+int operation_load()
+{
+  emu_info("load not implemented yet");
+   return 0;
+}
+
+int migrate_abort()
+{
+    int i;
+    int r;
+    emu_info("attempting to abort");
+
+    for (i=0; i < num_emus; i++) {
+        if (emus[i].enabled) {
+            switch (emus[i].proto) {
+            case emp:
+                r = em_socke_send_cmd(emus[i].sock, cmd_migrate_abort , 0);
+                if (r < 0) {
+                   emu_err("Failed to send msg %d for %s\n",cmd_migrate_abort ,emus[i].name);
+                   return -1;
+                }
+            break;
+            case qmp:
+            break;
+            }
+        }
+    }
+    return -0;
+}
+
+
+int operation_save()
 {
    int r;
    int end_r;
 
-   for (r=1; r < argc; r++) {
-       if ((strcmp(argv[r], "-mode")==0) && (strcmp(argv[r+1], "hvm_save")==0))
-           goto itsok;
-   }
+   int can_abort = true;
 
+   r = config_emus();
+  if (r)
+       goto migrate_end;
 
-   execvp("/root/xenguest", argv);
-
-itsok:
-
-   parse_args(argc, argv);
-
-   setvbuf(stdout, NULL, _IONBF, 0);
-
+   /* Start EMUs * * * * * * */
    r = startup_emus();
    if (r)
        goto migrate_end;
 
+
+
+   /* Init EMUs * * * * * * */
    r = init_emus();
    if (r)
        goto migrate_end;
 
-   r = migrate_emus();
-   if (r)
-       goto migrate_end;
 
-   wait_for_ready();
+   /* Live migrate * * * * * * * */
+   if (gLive) {
+       r = migrate_emus();
+       if (r)
+           goto migrate_end;
 
-   broudcast(cmd_migrate_pause);
+       r = wait_for_ready();
+       if (r)
+           goto migrate_end;
+   }
+
+
+   can_abort = false;
 
    emu_info("ask xenopsd to suspend");
    r = do_suspend_guest_callback();
@@ -697,20 +945,76 @@ itsok:
 
    emu_info("should be suspended, send paused to emus");
 
+   pause_emus();
+
    r = migrate_paused();
    if (r)
        goto migrate_end;
 
-   r = migrate_finish();
+   wait_for_finished();
 
-   sent_result();
+   emu_info("send non-live data");
+
+   r = save_nonlive_one_by_one();
+
+   emu_info("sending result");
+   send_result();
 
 migrate_end:
+   end_r = 0;
+   if (r && can_abort)
+       end_r = migrate_abort();
 
-   end_r = migrate_end();
+   if (end_r == 0) {
+       emu_info("ending");
+       end_r = migrate_end();
+   }
 
-   if (r || end_r)
+   if (r || end_r) {
       emu_err("Failed!\n");
+      return 1;
+   }
 
-   return 1;
+   return 0;
+}
+
+
+
+int main(int argc, char *argv[])
+{
+   int r;
+   int ok=0;
+
+   emu_info("starting up");
+
+   for (r=1; r < argc; r++) {
+       emu_info("param = %s", argv[r]);
+       if ((strcmp(argv[r], "-mode")==0) && (strcmp(argv[r+1], "hvm_save")==0))
+           ok = 1;
+   }
+
+
+   if (!ok) {
+      emu_info("that was rubbish - run xenguset");
+      execvp("/usr/libexec/xen/bin/xenguest", argv);
+   }
+
+   parse_args(argc, argv);
+   emu_info("starting ... ");
+
+   if (gMode == op_invalid)
+      return 1;
+
+
+   switch (gMode) {
+   case op_save: 
+      setvbuf(stdout, NULL, _IONBF, 0);
+      return operation_save();
+   case op_restore: emu_info("start xenguest for load");
+            execvp("/usr/libexec/xen/bin/xenguest", argv);
+   default:
+      emu_err("Invilid mode");
+      return 1;
+   }
+
 }

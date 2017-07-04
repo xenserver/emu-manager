@@ -129,6 +129,23 @@ int em_socket_open(emu_socket_t *sock, char* path)
    return 0;
 }
 
+
+int print_jerror(json_object *jobj) {
+   int r;
+   r = json_object_get_type(jobj);
+   if (r == json_type_string) {
+      const char* err;
+      err = json_object_get_string(jobj);
+      ERR("Recived error '%s'", err);
+   } else if (r == json_type_object) {
+      ERR("Recived error object");
+   } else {
+      ERR("Recived weird error, type %d", r);
+   }
+   return 0;
+}
+
+
 int em_socket_read(emu_socket_t* sock) {
 
    int r;
@@ -229,7 +246,7 @@ int em_socket_read(emu_socket_t* sock) {
             ret = 1;
       } else if (strcmp(key, "error") == 0) {
          ret = -2;
-         ERR("Recived error\n");
+         print_jerror(val);
       } else if (strcmp(key, "event") == 0
                   && json_object_get_type(val) == json_type_string) {
          if (ret==-1)
@@ -286,7 +303,7 @@ int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no, int param)
    } else if (!commands[cmd].fd && !param)
         r = send_cmd(socket_fd, buffer);
    else {
-        ERR("Invalid FD param");
+        ERR("Invalid FD param (%d) for %s (needs fd = %d)",param,  commands[cmd].name, commands[cmd].fd);
         return -1;
    }
 
