@@ -6,7 +6,9 @@ enum command_num {
     cmd_migrate_paused,
     cmd_migrate_progress,
     cmd_migrate_nonlive,
+    cmd_restore,
     cmd_quit,
+    cmd_set_args,
     cmd_number
 };
 
@@ -25,6 +27,8 @@ struct command_names _cmd_name[] = {                \
     {"migrate_pause",0, cmd_migrate_pause},         \
     {"migrate_paused",0, cmd_migrate_paused},       \
     {"migrate_progress",0, cmd_migrate_progress},   \
-    {"quit", 0, cmd_quit}                           \
+    {"quit", 0, cmd_quit},                          \
+    {"restore", 0, cmd_restore},                    \
+    {"set_args", 0, cmd_set_args}                   \
 }
 

@@ -84,8 +84,6 @@ int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data
    (*sock)->buf_rem=NULL;
    (*sock)->rem_len=0;
 
-   (*sock)->status=not_done;
-
    return 0;
 }
 
@@ -205,7 +203,9 @@ int em_socket_read(emu_socket_t* sock) {
 
       offset = 0;
       len = read(socket_fd, buffer, buffersize);
-      if (len < 0) {
+      if (len <= 0) {
+          if (len==0)
+             errno=ENODATA;
           ERR("Didnt get reply\n");
           goto early_error;
       }
@@ -272,7 +272,23 @@ early_error:
 }
 
 
-int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no, int param)
+int size_args_list(struct args_list* alist, int* char_count) {
+  struct args_list* al = alist;
+
+  int count = 0;
+  int chars = 0;
+
+  while (al) {
+     count++;
+     chars += strlen(al->key) + strlen(al->value);
+     al = al->next;
+  }
+  *char_count = chars;
+  return count;
+}
+
+
+int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int fd, struct args_list* args)
 {
    const int buffersize = 128;
    int cmd;
@@ -280,6 +296,7 @@ int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no, int param)
    int r;
    int socket_fd = -1;
 
+   char* out_buffer = NULL;
 //   json_object *jobj;
    if ((sock==NULL) || (sock->fd <= 0))
    {
@@ -296,15 +313,45 @@ int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no, int param)
       return -1;
    }
    INFO("sending %s", commands[cmd].name);
-   snprintf(buffer, buffersize, "{ \"execute\" : \"%s\"}", commands[cmd].name);
 
-   if (commands[cmd].fd && param) {
-        r = send_fd(socket_fd,  param, buffer);
-   } else if (!commands[cmd].fd && !param)
-        r = send_cmd(socket_fd, buffer);
+   if (args) {
+       int buf_size;
+       struct args_list* al = args;
+       
+       r = size_args_list(args, &buf_size);
+       buf_size += strlen("\"\":\"\", ") * r + strlen("} }"); /* note: \0 takes spair ',' space */
+
+       buf_size += snprintf(buffer, buffersize, "{ \"execute\" : \"%s\", \"arguments\" : { ", commands[cmd].name);
+
+       out_buffer = malloc(buf_size);
+       strcpy(out_buffer, buffer);
+
+
+       while (al) {
+          snprintf(buffer, buffersize, "\"%s\":\"%s\"%s ", al->key, al->value, (al->next)?",":"");
+          strcat(out_buffer, buffer);
+          al = al->next;
+       }
+
+       strcat(out_buffer, "} }");
+       }
    else {
-        ERR("Invalid FD param (%d) for %s (needs fd = %d)",param,  commands[cmd].name, commands[cmd].fd);
-        return -1;
+       snprintf(buffer, buffersize, "{ \"execute\" : \"%s\"}", commands[cmd].name);
+       out_buffer = buffer;
+  }
+
+   if (commands[cmd].fd && fd) {
+        r = send_fd(socket_fd,  fd, out_buffer);
+   } else if (!commands[cmd].fd && !fd)
+        r = send_cmd(socket_fd, out_buffer);
+   else {
+        ERR("Invalid FD param (%d) for %s (needs fd = %d)",fd,  commands[cmd].name, commands[cmd].fd);
+        goto error_free;
+   }
+
+   if (args) {
+     free(out_buffer);
+     out_buffer = NULL;
    }
 
    if (r < 0) {
@@ -322,5 +369,30 @@ int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no, int param)
        ERR("Failed to read after command");
        return -1;
    }
+
+error_free:
+   if (args)
+      free(out_buffer);
+   return -1;
+}
+
+
+
+
+int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no)
+{
+    return em_socke_send_cmd_fd_args(sock, cmd_no, 0, NULL);
+}
+
+
+int em_socke_send_cmd_fd(emu_socket_t* sock, enum command_num cmd_no, int fd)
+{
+    return em_socke_send_cmd_fd_args(sock, cmd_no, fd, NULL);
+}
+
+
+int em_socke_send_cmd_args(emu_socket_t* sock, enum command_num cmd_no, struct args_list* args)
+{
+    return em_socke_send_cmd_fd_args(sock, cmd_no, 0, args);
 }
 
