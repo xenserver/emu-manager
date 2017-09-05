@@ -40,11 +40,13 @@ emu_arg_supports
 enum operation_mode {
    op_invalid = -1,
    op_save    = 0,
+   op_pvsave,
    op_restore,
+   op_pvrestore,
    op_end
 };
 
-static const char* mode_names[] = {"hvm_save", "hvm_restore", NULL};
+static const char* mode_names[] = {"hvm_save","save", "hvm_restore", "restore", NULL};
 
 static const char* supports_table[] = {"migration-v2", NULL};
 
@@ -53,6 +55,7 @@ int gDomid  = 0;
 int gFd_in  = 0;
 int gFd_out = 0;
 int gLive   = 0;
+int gLastUpdateP = -1;
 enum operation_mode gMode=op_invalid;
 
 enum protocol {
@@ -93,11 +96,12 @@ enum state {
 
 
 struct data_stats {
-   int sent;
-   int remaining;
+   uint64_t total;
+   uint64_t sent;
+   uint64_t remaining;
    int iter;
-   int per;
 };
+
 
 struct emu {
     char *name;
@@ -107,6 +111,9 @@ struct emu {
     int enabled;
 
     int live_check;
+
+    int exp_total;
+
     emu_socket_t* sock;
     int stream;
 
@@ -124,10 +131,10 @@ struct emu {
 #define XENGUEST_ARGS  "/usr/libexec/xen/bin/xenguest -debug -domid %d -controloutfd 2 -controlinfd 0 -mode listen"
 
 struct emu emus[num_emus] = {
-//   name      , startup               , proto, enabled, livech
-    {"xenguest", XENGUEST_ARGS, "Ready", emp, (FULL_LIVE | STAGE_ENABLED) , true  , NULL, 0, not_done, NULL, 0, NULL, NULL},
-    {"vgpu"    , NULL         , NULL   , emp, FULL_LIVE                   , false , NULL, 0, not_done, NULL, 0, NULL, NULL},
-    {"qemu"    , NULL         , NULL   , qmp, FULL_NONLIVE                , false , NULL, 0, not_done, NULL, 0, NULL, NULL}
+//   name      , startup               , proto, enabled,                   livech , gues_tot, sock, stream, status, result, err, extra, stats
+    {"xenguest", XENGUEST_ARGS, "Ready", emp, (FULL_LIVE | STAGE_ENABLED) , true  , 1000000, NULL,     0  , not_done, NULL, 0   , NULL, NULL},
+    {"vgpu"    , NULL         , NULL   , emp, FULL_LIVE                   , false , 100000,  NULL,     0  , not_done, NULL, 0   , NULL, NULL},
+    {"qemu"    , NULL         , NULL   , qmp, FULL_NONLIVE                , false , 10,      NULL,     0  ,not_done , NULL, 0   , NULL, NULL}
 
 };
 
@@ -135,9 +142,31 @@ struct emu emus[num_emus] = {
 #define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
 
 
+int calculate_done() {
+    int i;
+
+    uint64_t total_expect = 0;
+    uint64_t total_sent  = 0;
+    uint64_t perc;
+
+    for (i=0; i< num_emus; i++) {
+       if (emus[i].enabled) {
+           if (emus[i].data_stats) {
+               total_sent += emus[i].data_stats->sent;
+               total_expect += emus[i].data_stats->sent + emus[i].data_stats->remaining;
+           } else {
+              total_expect += emus[i].exp_total;
+              if (emus[i].status >= all_done)
+                  total_sent += emus[i].exp_total;
+           }
+       }
+   }
+
+   perc = (total_expect)?(total_sent * 100) / total_expect:0;
+   return (uint) perc;
+}
 
 int do_receive_emu(int emu_i);
-
 
 void free_extra_arg(struct args_list *xa) {
       free(xa->key);
@@ -451,7 +480,7 @@ int send_xenopd_message(char* message)
 int send_xenopsd_progress(int prog)
 {
     char* buf;
-    int r = asprintf(&buf, "info:\b\b\b\b%d\n", prog);
+    int r = asprintf(&buf, "info:\\b\\b\\b\\b%d\n", prog);
     if (r <= 0)
         return -1;
 
@@ -460,7 +489,16 @@ int send_xenopsd_progress(int prog)
     return 0;
 }
 
+int update_progress() {
 
+   int progress = calculate_done();
+
+   if (gLastUpdateP != progress) {
+       send_xenopsd_progress(progress);
+       gLastUpdateP = progress;
+   }
+   return progress;
+}
 
 int send_xenopd_message_reply(char* message)
 {
@@ -832,32 +870,32 @@ int i;
 int process_status_stats(struct emu* emu, int iter, int sent, int rem)
 {
    int ready = (emu->status == live_done);
+   int progress;
 
    /* fudge - remaining can be a wrong. */
    if ((iter==0) && (rem == 0))
          rem = -1;
 
-  if (emu->data_stats == NULL) {
+   if (emu->data_stats == NULL) {
       emu->data_stats = malloc(sizeof( struct data_stats));
       if (emu->data_stats == NULL) {
            emu_err("Failed to alloc data_stats for %s", emu->name);
-           emu->data_stats->per = 0;
       }
-  }
-  if (emu->data_stats != NULL) {
+   }
+   if (emu->data_stats != NULL) {
 
           emu->data_stats->remaining=rem;
           emu->data_stats->sent=sent;
           emu->data_stats->iter=iter;
-          if (rem != -1)
-              emu->data_stats->per = sent*100/(sent+rem);
-  }
-  emu_info("for %s:rem %d, iter %d, send %d %s.  %d%%",emu->name, rem, iter, sent, (ready)?" Waiting":"",emu->data_stats->per );
+   }
+   progress =  update_progress();
 
+   emu_info("for %s:rem %d, iter %d, send %d %s.  Tot=%d",emu->name, rem, iter, sent, (ready)?" Waiting":"", progress);
    if ((iter>0) && (rem < 50 || iter >= 4) && !ready) {
        emu_info("criteria met - signal ready");
        emu->status= live_done;
    }
+
    return 0;
 }
 
@@ -1212,7 +1250,7 @@ int wait_for_finished()
                   return -1;
 
             }
-
+            update_progress();
          }
     }
     return 0;
@@ -1250,6 +1288,7 @@ int wait_for_ready()
                   return -1;
               }
          }
+         update_progress();
     }
     return 0;
 }
@@ -1291,6 +1330,7 @@ int save_nonlive_one_by_one()
                      emu_err("Got error while waiting for events");
                      return -1;
             }
+            update_progress();
         }
 
         if (emus[i].stream)
@@ -1506,9 +1546,15 @@ int main(int argc, char *argv[])
    emu_info("starting ... ");
 
    switch (gMode) {
+   case op_pvsave:
+       add_extra_arg(&emus[0], "pv", "true");
+       /* fall though */
    case op_save:
       setvbuf(stdout, NULL, _IONBF, 0);
       return operation_save();
+   case op_pvrestore:
+      add_extra_arg(&emus[0], "pv", "true");
+      /* fall though */
    case op_restore:
       return operation_load();
    default:
