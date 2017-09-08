@@ -96,7 +96,7 @@ enum state {
 
 
 struct data_stats {
-   uint64_t total;
+   uint64_t part_sent;
    uint64_t sent;
    uint64_t remaining;
    int iter;
@@ -153,6 +153,10 @@ int calculate_done() {
        if (emus[i].enabled) {
            if (emus[i].data_stats) {
                total_sent += emus[i].data_stats->sent;
+
+               /* Add 80% of partial update, to compinsate for lack cosideration of dirtying of pages */
+               total_sent += ((emus[i].data_stats->part_sent - emus[i].data_stats->sent) * 80) / 100;
+
                total_expect += emus[i].data_stats->sent + emus[i].data_stats->remaining;
            } else {
               total_expect += emus[i].exp_total;
@@ -880,13 +884,20 @@ int process_status_stats(struct emu* emu, int iter, int sent, int rem)
       emu->data_stats = malloc(sizeof( struct data_stats));
       if (emu->data_stats == NULL) {
            emu_err("Failed to alloc data_stats for %s", emu->name);
+      } else {
+           emu->data_stats->remaining = -1;
       }
    }
    if (emu->data_stats != NULL) {
 
-          emu->data_stats->remaining=rem;
-          emu->data_stats->sent=sent;
-          emu->data_stats->iter=iter;
+          if (rem != -1) {
+              emu->data_stats->remaining = rem;
+              emu->data_stats->sent = sent;
+              emu->data_stats->iter = iter;
+              emu->data_stats->part_sent = sent;
+          } else {
+              emu->data_stats->part_sent = sent;
+          }
    }
    progress =  update_progress();
 
