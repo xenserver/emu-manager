@@ -15,6 +15,7 @@ typedef struct emu_socket
    char* buf_rem;
    int rem_offset;
    int rem_len;
+   int more;
 } emu_socket_t;
 
 
@@ -32,4 +33,4 @@ int em_socke_send_cmd_args(emu_socket_t* sock, enum command_num cmd_no, struct a
 
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data);
 int em_socket_open(emu_socket_t *sock, char* path);
-int em_socket_read(emu_socket_t* sock);
+int em_socket_read(emu_socket_t* sock, int canread);

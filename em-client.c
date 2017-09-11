@@ -11,13 +11,13 @@
 #include "em-client.h"
 #include <errno.h>
 #include <syslog.h>
-
+#include <stdbool.h>
 
 #define INFO(args...) syslog(LOG_DAEMON|LOG_INFO, args)
 #define ERR(args...) syslog(LOG_DAEMON|LOG_ERR, args)
 #define ERRN(str1)  syslog(LOG_DAEMON|LOG_ERR, "%s: %s failed with err %s", __func__, str1, strerror(errno))
 
-#if 0
+#if 1
 #define DEBUG(args...) syslog(LOG_DAEMON|LOG_INFO, args)
 #else
 #define DEBUG(args...)
@@ -83,6 +83,7 @@ int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data
 
    (*sock)->buf_rem=NULL;
    (*sock)->rem_len=0;
+   (*sock)->more=false;
 
    return 0;
 }
@@ -144,7 +145,7 @@ int print_jerror(json_object *jobj) {
 }
 
 
-int em_socket_read(emu_socket_t* sock) {
+int em_socket_read(emu_socket_t* sock, int canread) {
 
    int r;
    int len;
@@ -165,7 +166,7 @@ int em_socket_read(emu_socket_t* sock) {
 
    tok = json_tokener_new();
    if (tok == NULL) {
-       ERR("In need of a tok\n");
+       ERR("In need of a tok (%d)\n", sock->fd);
        return -1;
    }
 
@@ -174,7 +175,7 @@ int em_socket_read(emu_socket_t* sock) {
 
    if (len > 0) {
        offset = sock->rem_offset;
-       DEBUG("Processing previouse buffer @ %d of %d bytes", offset, len);
+       DEBUG("Processing previouse buffer @ %d of %d bytes (%d)", offset, len, sock->fd);
 
        jobj = json_tokener_parse_ex(tok, &(buffer[offset]), len);
        jerr = json_tokener_get_error(tok);
@@ -183,7 +184,7 @@ int em_socket_read(emu_socket_t* sock) {
            DEBUG("Tok had enough");
            need_read=0;
        } else if (jerr != json_tokener_continue) {
-           ERR("Got an error %d", jerr);
+           ERR("Got an error %d (%d)", jerr, sock->fd);
            goto early_error;
        }
    } else if (buffer == NULL) {
@@ -198,23 +199,30 @@ int em_socket_read(emu_socket_t* sock) {
    }
 
    if (need_read) {
+      if (canread) {
 
-      DEBUG("Reading %s", (len>0) ? "more" : "");
 
-      offset = 0;
-      len = read(socket_fd, buffer, buffersize);
-      if (len <= 0) {
-          if (len==0)
-             errno=ENODATA;
-          ERR("Didnt get reply\n");
-          goto early_error;
-      }
+          DEBUG("Reading %s (%d)", (len>0) ? "more" : "", sock->fd);
 
-      jobj = json_tokener_parse_ex(tok, buffer, len);
-      jerr = json_tokener_get_error(tok);
+          offset = 0;
+          len = read(socket_fd, buffer, buffersize);
+          if (len <= 0) {
+              if (len==0)
+                  errno=ENODATA;
+              ERR("Didnt get reply\n");
+              goto early_error;
+          }
 
-      buffer[len] = 0;
-      DEBUG("Just read '%s'", buffer);
+          jobj = json_tokener_parse_ex(tok, buffer, len);
+          jerr = json_tokener_get_error(tok);
+
+          buffer[len] = 0;
+          DEBUG("Just read '%s'", buffer);
+       } else {
+           ret = 0;
+           sock->more = false;
+           goto early_error;
+       }
    }
 
    if (jerr != json_tokener_success) {
@@ -235,8 +243,10 @@ int em_socket_read(emu_socket_t* sock) {
    if (len != tok->char_offset) {
        sock->rem_offset = tok->char_offset + offset;
        sock->rem_len = len - tok->char_offset;
+       sock->more = true;
    } else {
        sock->rem_len = 0;
+       sock->more = false;
    }
 
    json_object_object_foreach(jobj, key, val) {
@@ -251,10 +261,13 @@ int em_socket_read(emu_socket_t* sock) {
                   && json_object_get_type(val) == json_type_string) {
          if (ret==-1)
              ret = 0;
-         DEBUG("processing event\n" );
          callback = sock->callback;
-         if (callback)
+         if (callback) {
+                DEBUG("processing event\n" );
                 callback(jobj, sock);
+         } else {
+                DEBUG("not processing event - no callback\n" );
+         }
       } else if (strcmp(key, "data") == 0) {
 //                INFO("has data");
       } else {
@@ -263,11 +276,14 @@ int em_socket_read(emu_socket_t* sock) {
    }
    if (ret == -1)
      ERR("Didnt get anything expected");
-   DEBUG("responce processed");
+   DEBUG("responce processed (%d)", sock->fd);
 error:
    json_object_put(jobj);
 early_error:
-   json_tokener_free(tok); 
+   json_tokener_free(tok);
+
+   /* -2 = recived error, -1 = our error, 0 = is good, may have processed somithng, 1 = returning somithng. */
+
    return ret;
 }
 
@@ -360,7 +376,7 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
    }
 
    do {
-       r = em_socket_read(sock);
+       r = em_socket_read(sock, 1);
    } while ( r == 0);
 
    if (r==1)

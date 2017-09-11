@@ -914,24 +914,31 @@ int process_status_stats(struct emu* emu, int iter, int sent, int rem)
 int emu_callback(json_object *jobj, emu_socket_t* sock) 
 {
    struct emu* emu = (struct emu*) sock->data;
+   int r;
 
    json_object *event=NULL;
    json_object *data=NULL;
 
    json_object_object_foreach(jobj, key, val) {
-      if (strcmp(key, "data") == 0)
-         data=val;
-      if (strcmp(key, "event") == 0)
-         event=val;
+      if (strcmp(key, "data") == 0) {
+         r = json_object_get_type(val);
+         if (r == json_type_object)
+             data=val;
+         else
+             emu_err("Data must be of type object - got %d", r);
+      }
+      if (strcmp(key, "event") == 0) {
+         r = json_object_get_type(val);
+         if (r == json_type_string)
+             event=val;
+         else
+             emu_err("Events must be of type string - got %d", r);
+      }
    }
 
    if (event && data) {
-        int r;
         const char* ev_str=NULL;
-        r = json_object_get_type(event);
-        if (r == json_type_string) {
-            ev_str= json_object_get_string(event);
-        }
+        ev_str= json_object_get_string(event);
 
         if (strcmp(ev_str,"MIGRATION")==0) {
            int rem = -1;
@@ -965,9 +972,9 @@ int emu_callback(json_object *jobj, emu_socket_t* sock)
              }  else if (json_object_get_type(val) == json_type_int) {
                int v = json_object_get_int(val);
 
-               if (strcmp(key, "remaining")==0)
+               if (strcmp(key, "remaining")==0) {
                    rem = v;
-               else if (strcmp(key, "iteration")==0) {
+               } else if (strcmp(key, "iteration")==0) {
                     iter = v;
                }
                else if (strcmp(key, "sent")==0) { 
@@ -989,6 +996,7 @@ int emu_callback(json_object *jobj, emu_socket_t* sock)
    } else {
       emu_err("Called on something not an event");
    }
+
 
    return 0;
 }
@@ -1181,6 +1189,37 @@ int wait_for_event()
     int             max_fd = gFd_in;
     struct timeval  tv;
 
+    int was_more = false;;
+
+/* Check for existing data */
+
+
+    for (i=0; i< num_emus; i++) {
+         if (!emus[i].enabled)
+            continue;
+
+         if (emus[i].sock->more) {
+
+            int r;
+
+            was_more=true;
+
+            r = em_socket_read(emus[i].sock, false);
+            if (r < 0) {
+                 emu_err("Failed to read from %s\n",emus[i].name);
+                 return -1;
+            }
+            if (r > 0) {
+                emu_err("Unexpected return from %s\n",emus[i].name);
+                return -1;
+            }
+         }
+    }
+    if (was_more)
+       return 1;
+
+
+
     FD_ZERO(&rfds);
     FD_ZERO(&wfds);
     FD_ZERO(&xfds);
@@ -1214,7 +1253,7 @@ int wait_for_event()
       for (i=0; i< num_emus; i++) {
            if (emus[i].enabled && FD_ISSET(emus[i].sock->fd, &rfds)) {
                int r;
-               r = em_socket_read(emus[i].sock);
+               r = em_socket_read(emus[i].sock, true);
                if (r < 0) {
                    emu_err("Failed to read from %s\n",emus[i].name);
                    return -1;
