@@ -134,7 +134,7 @@ struct emu emus[num_emus] = {
 //   name      , startup               , proto, enabled,                   livech , gues_tot, sock, stream, status, result, err, extra, stats
     {"xenguest", XENGUEST_ARGS, "Ready", emp, (FULL_LIVE | STAGE_ENABLED) , true  , 1000000, NULL,     0  , not_done, NULL, 0   , NULL, NULL},
     {"vgpu"    , NULL         , NULL   , emp, FULL_LIVE                   , false , 100000,  NULL,     0  , not_done, NULL, 0   , NULL, NULL},
-    {"qemu"    , NULL         , NULL   , qmp, FULL_NONLIVE                , false , 10,      NULL,     0  ,not_done , NULL, 0   , NULL, NULL}
+    {"qemu"    , NULL         , NULL   , qmp, FULL_NONLIVE                , false , 10,      NULL,     0  , not_done, NULL, 0   , NULL, NULL}
 
 };
 
@@ -1023,7 +1023,7 @@ int open_sockets(struct emu* emu)
     return 0;
 }
 
-int init_emus(bool progress) {
+int connect_emus(void) {
 
    int i;
    int r;
@@ -1046,6 +1046,13 @@ int init_emus(bool progress) {
         break;
       }
    }
+   return 0;
+}
+
+int init_emus(bool progress) {
+   int i;
+   int r;
+   struct emu* emu;
 
    /* init each emu */
 
@@ -1103,7 +1110,7 @@ int do_receive_emu(int emu_i)
     }
 
     emu_info("restore %d: %s", emu_i, emu->name);
-    r = em_socke_send_cmd(emu->sock,cmd_restore);
+    r = em_socke_send_cmd_fd(emu->sock,cmd_restore, emu->stream);
     if (r < 0) {
         emu_err("Failed to start restore for %s\n", emu->name);
         return -1;
@@ -1426,7 +1433,7 @@ int operation_load()
    }
 
    /* Init EMUs * * * * * * */
-   r = init_emus(false);
+   r = connect_emus();
    if (r) {
        emu_err("init failed");
        goto load_end;
@@ -1513,6 +1520,11 @@ int operation_save()
 
    /* Start EMUs * * * * * * */
    r = startup_emus();
+   if (r)
+       goto migrate_end;
+
+
+   r = connect_emus();
    if (r)
        goto migrate_end;
 

@@ -28,7 +28,7 @@ struct command_names _cmd_name[] = {                \
     {"migrate_paused",0, cmd_migrate_paused},       \
     {"migrate_progress",0, cmd_migrate_progress},   \
     {"quit", 0, cmd_quit},                          \
-    {"restore", 0, cmd_restore},                    \
+    {"restore", 1, cmd_restore},                    \
     {"set_args", 0, cmd_set_args}                   \
 }
 
