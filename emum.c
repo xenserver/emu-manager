@@ -1049,7 +1049,7 @@ int connect_emus(void) {
    return 0;
 }
 
-int init_emus(bool progress) {
+int init_emus() {
    int i;
    int r;
    struct emu* emu;
@@ -1081,14 +1081,43 @@ int init_emus(bool progress) {
                    }
              }
 
-             if (progress) {
-                 r = em_socke_send_cmd(emu->sock,cmd_migrate_progress);
+        break;
+        case qmp:
 
-                 if (r < 0) {
-                     emu_err("Failed to request progress reporting %s\n", emu->name);
-                     return -1;
-                 }
-             }
+        break;
+        }
+   }
+   return 0;
+}
+
+
+int request_track_emus() {
+   int i;
+   int r;
+   struct emu* emu;
+
+   /* init each emu */
+
+   for (i=0; i< num_emus; i++) {
+        emu = &emus[i];
+        if (!(emu->enabled && STAGE_LIVE  ))
+             continue;
+
+
+        switch (emu->proto) {
+        case emp:
+
+           r = em_socke_send_cmd(emu->sock,cmd_track_dirty);
+            if (r < 0) {
+                 emu_err("Failed to request dirty tracking %s\n", emu->name);
+                 return -1;
+            }
+
+            r = em_socke_send_cmd(emu->sock,cmd_migrate_progress);
+            if (r < 0) {
+                 emu_err("Failed to request progress reporting %s\n", emu->name);
+                 return -1;
+            }
 
         break;
         case qmp:
@@ -1098,6 +1127,10 @@ int init_emus(bool progress) {
    }
    return 0;
 }
+
+
+
+
 
 int do_receive_emu(int emu_i)
 {
@@ -1432,7 +1465,7 @@ int operation_load()
        goto load_end;
    }
 
-   /* Init EMUs * * * * * * */
+   /* Make connection to EMUs * * * * * * */
    r = connect_emus();
    if (r) {
        emu_err("init failed");
@@ -1529,13 +1562,18 @@ int operation_save()
        goto migrate_end;
 
    /* Init EMUs * * * * * * */
-   r = init_emus(true);
+   r = init_emus();
    if (r)
        goto migrate_end;
 
 
    /* Live migrate * * * * * * * */
    if (gLive) {
+
+       r = request_track_emus();
+       if (r)
+           goto migrate_end;
+
        r = migrate_emus();
        if (r)
            goto migrate_end;

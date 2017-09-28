@@ -1,4 +1,5 @@
 enum command_num {
+    cmd_track_dirty,
     cmd_migrate_abort,
     cmd_migrate_init,
     cmd_migrate_live,
@@ -20,6 +21,7 @@ struct command_names {
 
 #define EMP_COMMANDS(_cmd_name)                     \
 struct command_names _cmd_name[] = {                \
+    {"track_dirty", 0, cmd_track_dirty},            \
     {"migrate_abort",0, cmd_migrate_abort},         \
     {"migrate_init",1, cmd_migrate_init},           \
     {"migrate_live",0, cmd_migrate_live},           \
