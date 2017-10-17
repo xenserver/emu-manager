@@ -21,7 +21,6 @@ struct command_names {
 
 #define EMP_COMMANDS(_cmd_name)                     \
 struct command_names _cmd_name[] = {                \
-    {"track_dirty", 0, cmd_track_dirty},            \
     {"migrate_abort",0, cmd_migrate_abort},         \
     {"migrate_init",1, cmd_migrate_init},           \
     {"migrate_live",0, cmd_migrate_live},           \
@@ -30,7 +29,8 @@ struct command_names _cmd_name[] = {                \
     {"migrate_paused",0, cmd_migrate_paused},       \
     {"migrate_progress",0, cmd_migrate_progress},   \
     {"quit", 0, cmd_quit},                          \
-    {"restore", 1, cmd_restore},                    \
-    {"set_args", 0, cmd_set_args}                   \
+    {"restore", 0, cmd_restore},                    \
+    {"set_args", 0, cmd_set_args},                  \
+    {"track_dirty", 0, cmd_track_dirty}             \
 }
 

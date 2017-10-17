@@ -63,7 +63,16 @@ static int send_fd(int socket, int fd_to_send, char* message_buffer)
 
 static int send_cmd(int socket, char* message_buffer)
 {
-   return send(socket, message_buffer, strlen(message_buffer), MSG_NOSIGNAL);
+   int r;
+   int len  = strlen(message_buffer);
+   int offset = 0;
+   do {
+       r = send(socket, &message_buffer[offset], len-offset, MSG_NOSIGNAL);
+       if (r > 0)
+         offset += r;
+   } while (offset < len && (r == EAGAIN || r > 0));
+
+   return (r <= 0) ? r : offset;
 }
 
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data)
@@ -90,7 +99,6 @@ int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data
 
 int em_socket_open(emu_socket_t *sock, char* path)
 {
-
    int  socket_fd;
    struct sockaddr_un address;
 
@@ -102,13 +110,12 @@ int em_socket_open(emu_socket_t *sock, char* path)
    socket_fd = socket(PF_UNIX, SOCK_STREAM, 0);
    if(socket_fd < 0)
    {
-      ERR("socket() failed\n");
+      ERRN("socket()");
       return -1;
    }
 
    /* start with a clean address structure */
    memset(&address, 0, sizeof(struct sockaddr_un));
-
 
    address.sun_family = AF_UNIX;
    strncpy(address.sun_path, path, 107);
@@ -119,8 +126,8 @@ int em_socket_open(emu_socket_t *sock, char* path)
    if(connect(socket_fd,
        (struct sockaddr *) &address,
             sizeof(struct sockaddr_un)) != 0)
-   { 
-       ERR("connect() failed\n");
+   {
+       ERRN("connect()");
        close(socket_fd);
        return -1;
    }
@@ -209,7 +216,7 @@ int em_socket_read(emu_socket_t* sock, int canread) {
           if (len <= 0) {
               if (len==0)
                   errno=ENODATA;
-              ERR("Didnt get reply\n");
+              ERRN("Read reply");
               goto early_error;
           }
 
@@ -276,7 +283,7 @@ int em_socket_read(emu_socket_t* sock, int canread) {
    }
    if (ret == -1)
      ERR("Didnt get anything expected");
-   DEBUG("responce processed (%d)", sock->fd);
+   DEBUG("response processed (%d)", sock->fd);
 error:
    json_object_put(jobj);
 early_error:
@@ -371,7 +378,7 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
    }
 
    if (r < 0) {
-      ERRN("Failed to send");
+      ERRN("Send()");
       return -1;
    }
 

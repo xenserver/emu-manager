@@ -1107,7 +1107,7 @@ int request_track_emus() {
         switch (emu->proto) {
         case emp:
 
-           r = em_socke_send_cmd(emu->sock,cmd_track_dirty);
+            r = em_socke_send_cmd(emu->sock,cmd_track_dirty);
             if (r < 0) {
                  emu_err("Failed to request dirty tracking %s\n", emu->name);
                  return -1;
@@ -1143,7 +1143,7 @@ int do_receive_emu(int emu_i)
     }
 
     emu_info("restore %d: %s", emu_i, emu->name);
-    r = em_socke_send_cmd_fd(emu->sock,cmd_restore, emu->stream);
+    r = em_socke_send_cmd(emu->sock, cmd_restore);
     if (r < 0) {
         emu_err("Failed to start restore for %s\n", emu->name);
         return -1;
@@ -1332,7 +1332,7 @@ int wait_for_finished()
              r = wait_for_event();
 
              if (r < 0 && errno != EINTR && errno != ETIME) {
-                  emu_err("Got error while waiting for events");
+                  emu_err("Got error %s while waiting for events", strerror(errno));
                   return -1;
              }
             if (r==0) {
@@ -1472,9 +1472,15 @@ int operation_load()
        goto load_end;
    }
 
+  /* Init EMUs * * * * * * */
+   r = init_emus();
+   if (r)
+       goto load_end;
+
+
    emu_info("Waiting for xenopsd");
    /* Wait for everything to finish */
-   for (emu=0; emu < num_emus; emu++) 
+   for (emu=0; emu < num_emus; emu++)
        if (emus[emu].enabled)
            while (emus[emu].status != result_sent) {
 
@@ -1488,7 +1494,7 @@ int operation_load()
                if (r < 0 && errno != EINTR && errno != ETIME) {
                    emu_err("Error waiting on events %s", strerror(errno) );
                    goto load_end;
-               } else if (r==0) {
+               } else if (r == 0) {
                    emu_err("Recived EOF");
                    r = -1;
                    goto load_end;
@@ -1508,6 +1514,7 @@ int operation_load()
                }
 
            }
+   r = 0;
 
 load_end:
    migrate_end();
@@ -1658,7 +1665,7 @@ int main(int argc, char *argv[])
    case op_restore:
       return operation_load();
    default:
-      emu_err("Invilid mode");
+      emu_err("Invalid mode");
       return 1;
    }
 
