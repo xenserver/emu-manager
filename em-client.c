@@ -205,31 +205,35 @@ int em_socket_read(emu_socket_t* sock, int canread) {
        sock->buf_rem = buffer;
    }
 
-   if (need_read) {
-      if (canread) {
+   if (need_read && !canread) {
+       ret = 0;
+       sock->more = false;
+       goto early_error;
+   }
 
+   if (need_read)
+       offset = 0;
 
-          DEBUG("Reading %s (%d)", (len>0) ? "more" : "", sock->fd);
+   while (need_read) {
 
-          offset = 0;
-          len = read(socket_fd, buffer, buffersize);
-          if (len <= 0) {
-              if (len==0)
-                  errno=ENODATA;
-              ERRN("Read reply");
-              goto early_error;
-          }
+       DEBUG("Reading %s (%d)", (len>0) ? "more" : "", sock->fd);
 
-          jobj = json_tokener_parse_ex(tok, buffer, len);
-          jerr = json_tokener_get_error(tok);
-
-          buffer[len] = 0;
-          DEBUG("Just read '%s'", buffer);
-       } else {
-           ret = 0;
-           sock->more = false;
+       len = read(socket_fd, buffer, buffersize);
+       if (len <= 0) {
+           if (len==0)
+               errno=ENODATA;
+           ERRN("Read reply");
            goto early_error;
        }
+
+       jobj = json_tokener_parse_ex(tok, buffer, len);
+       jerr = json_tokener_get_error(tok);
+
+       buffer[len] = 0;
+       DEBUG("Just read '%s' %s", buffer, (jerr == json_tokener_success)?"ok":"");
+
+       if (jerr != json_tokener_continue) 
+           need_read = 0;
    }
 
    if (jerr != json_tokener_success) {
