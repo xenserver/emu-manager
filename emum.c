@@ -142,7 +142,7 @@ struct emu emus[num_emus] = {
 #define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
 
 
-int calculate_done(void)
+static int calculate_done(void)
 {
     int i;
 
@@ -171,9 +171,10 @@ int calculate_done(void)
    return (uint) perc;
 }
 
-int do_receive_emu(int emu_i);
+static int do_receive_emu(int emu_i);
 
-void free_extra_arg(struct args_list *xa) {
+static void free_extra_arg(struct args_list *xa)
+{
       free(xa->key);
       free(xa->value);
       free(xa);
@@ -191,8 +192,8 @@ void free_all_args_list(struct emu *emu) {
   }
 }
 
-int add_extra_arg(struct emu *emu, const char* key, char* value) {
-
+static int add_extra_arg(struct emu *emu, const char* key, char* value)
+{
    struct args_list *xa;
    struct args_list **lp;
 
@@ -223,7 +224,8 @@ int add_extra_arg(struct emu *emu, const char* key, char* value) {
 }
 
 
-int find_emu_by_name(char name[]) {
+static int find_emu_by_name(char name[])
+{
    int emu;
    for (emu=0; emu < num_emus; emu++) {
        if (strcmp(emus[emu].name, name)==0)
@@ -232,7 +234,7 @@ int find_emu_by_name(char name[]) {
    return -1;
 }
 
-int trim(char str[], int len)
+static int trim(char str[], int len)
 {
     int i;
     str[len]='\0';
@@ -241,7 +243,8 @@ int trim(char str[], int len)
     return i;
 }
 
-int split(char strA[], char** strB, char delim) {
+static int split(char strA[], char** strB, char delim)
+{
    int pos;
 
    for (pos=0; (strA[pos] > '\0' && strA[pos] != delim); pos++);
@@ -254,9 +257,8 @@ int split(char strA[], char** strB, char delim) {
    return pos;
 }
 
-
-
-int str_lookup(const char* table[], char cmp[]) {
+static int str_lookup(const char* table[], char cmp[])
+{
     int i;
     for (i=0; table[i]; i++) {
         if (strcmp(table[i], cmp)==0)
@@ -269,7 +271,7 @@ int str_lookup(const char* table[], char cmp[]) {
 /* xenops interface */
 
 
-int read_tlimit(int fd, char* buf, size_t len, int time)
+static int read_tlimit(int fd, char* buf, size_t len, int time)
 {
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     int r;
@@ -297,7 +299,8 @@ const char* in_cmds[] = {"restore", NULL};
 #define UNDERSTOOD_SOMETHING 3
 
 
-int process_xod_line(char* buf) {
+static int process_xod_line(char* buf)
+{
     char* cmd_s;
     char* emu_name;
     int r=0;
@@ -344,7 +347,7 @@ int process_xod_line(char* buf) {
 char* xenopd_message_carry = NULL;
 int  full_xenopd_message_carry = false;
 
-int read_xenopd_message(char ** result)
+static int read_xenopd_message(char ** result)
 {
     char *buf=NULL;
     char *line;
@@ -448,7 +451,7 @@ stop:
 }
 
 
-int drain_messages(void)
+static int drain_messages(void)
 {
     int r=0;
     struct pollfd pfd = { .fd = gFd_in, .events = POLLIN };
@@ -462,7 +465,7 @@ int drain_messages(void)
 
 
 
-int send_xenopd_message(char* message)
+static int send_xenopd_message(char* message)
 {
 
     ssize_t len;
@@ -482,7 +485,7 @@ int send_xenopd_message(char* message)
    return 0;
 }
 
-int send_xenopsd_progress(int prog)
+static int send_xenopsd_progress(int prog)
 {
     char* buf;
     int r = asprintf(&buf, "info:\\b\\b\\b\\b%d\n", prog);
@@ -494,7 +497,7 @@ int send_xenopsd_progress(int prog)
     return 0;
 }
 
-int update_progress(void)
+static int update_progress(void)
 {
 
    int progress = calculate_done();
@@ -506,7 +509,7 @@ int update_progress(void)
    return progress;
 }
 
-int send_xenopd_message_reply(char* message)
+static int send_xenopd_message_reply(char* message)
 {
    char* buf;
    int r = send_xenopd_message(message);
@@ -531,11 +534,13 @@ int send_xenopd_message_reply(char* message)
   }
 }
 
-int do_suspend_guest_callback(void) {
+static int do_suspend_guest_callback(void)
+{
     return send_xenopd_message_reply("suspend:\n");
 }
 
-int xod_save_emu(int emu) {
+static int xod_save_emu(int emu)
+{
    char* buffer;
    int r;
 
@@ -555,7 +560,7 @@ int xod_save_emu(int emu) {
    return r;
 }
 
-int send_result(struct emu* emu) {
+static int send_result(struct emu* emu) {
      char* buffer;
      int r;
 
@@ -574,8 +579,7 @@ int send_result(struct emu* emu) {
     return r;
 }
 
-
-int send_final_result(void)
+static int send_final_result(void)
 {
     int r;
     char* buffer = "result:0 0\n";
@@ -599,7 +603,7 @@ static int parse_int(const char *str)
 }
 
 
-int find_emu(char* emu_str, char** remaining)
+static int find_emu(char* emu_str, char** remaining)
 {
    int len;
    *remaining=NULL;
@@ -614,8 +618,8 @@ int find_emu(char* emu_str, char** remaining)
    return find_emu_by_name(emu_str);
 }
 
-
-void get_dm_param(char* arg) {
+static void get_dm_param(char* arg)
+{
    int emu=-1;
    char *param=NULL;
    char *emu_name;
@@ -731,7 +735,7 @@ EMP_COMMANDS(commands);
 
 /* Send messge to all emus */
 
-int pause_emus(void)
+static int pause_emus(void)
 {
     int i;
     int r;
@@ -750,7 +754,7 @@ int pause_emus(void)
 
 
 /* This prevents stdout being buffered */
-int setenv_nobuffs(void)
+static int setenv_nobuffs(void)
 {
     clearenv();
     if ((putenv("LD_PRELOAD=/usr/libexec/coreutils/libstdbuf.so")!=0) ||
@@ -761,10 +765,8 @@ int setenv_nobuffs(void)
     return 0;
 }
 
-
-int start_emu(char command[], char ready[]) {
-
-
+static int start_emu(char command[], char ready[])
+{
   int filedes[2];
 
 
@@ -861,7 +863,7 @@ int start_emu(char command[], char ready[]) {
 
 
 
-int startup_emus(void)
+static int startup_emus(void)
 {
     int i;
 
@@ -875,7 +877,7 @@ int startup_emus(void)
     return 0;
 }
 
-int process_status_stats(struct emu* emu, int iter, int sent, int rem)
+static int process_status_stats(struct emu* emu, int iter, int sent, int rem)
 {
    int ready = (emu->status == live_done);
    int progress;
@@ -915,7 +917,7 @@ int process_status_stats(struct emu* emu, int iter, int sent, int rem)
 }
 
 /* where events are parsed */
-int emu_callback(json_object *jobj, emu_socket_t* sock) 
+static int emu_callback(json_object *jobj, emu_socket_t* sock)
 {
    struct emu* emu = (struct emu*) sock->data;
    int r;
@@ -1005,8 +1007,7 @@ int emu_callback(json_object *jobj, emu_socket_t* sock)
    return 0;
 }
 
-
-int open_sockets(struct emu* emu)
+static int open_sockets(struct emu* emu)
 {
 
     int r;
@@ -1027,8 +1028,8 @@ int open_sockets(struct emu* emu)
     return 0;
 }
 
-int connect_emus(void) {
-
+static int connect_emus(void)
+{
    int i;
    int r;
    struct emu* emu;
@@ -1053,7 +1054,7 @@ int connect_emus(void) {
    return 0;
 }
 
-int init_emus(void)
+static int init_emus(void)
 {
    int i;
    int r;
@@ -1095,8 +1096,7 @@ int init_emus(void)
    return 0;
 }
 
-
-int request_track_emus(void)
+static int request_track_emus(void)
 {
    int i;
    int r;
@@ -1134,11 +1134,7 @@ int request_track_emus(void)
    return 0;
 }
 
-
-
-
-
-int do_receive_emu(int emu_i)
+static int do_receive_emu(int emu_i)
 {
     int r;
     struct emu* emu = &emus[emu_i];
@@ -1158,8 +1154,7 @@ int do_receive_emu(int emu_i)
     return 0;
 }
 
-
-int migrate_emus(void)
+static int migrate_emus(void)
 {
   int i;
   int r;
@@ -1187,7 +1182,7 @@ int migrate_emus(void)
     return 0;
 }
 
-int migrate_paused(void)
+static int migrate_paused(void)
 {
     int i;
     int r;
@@ -1204,7 +1199,7 @@ int migrate_paused(void)
     return 0;
 }
 
-int migrate_end(void)
+static int migrate_end(void)
 {
    int fd;
    int i;
@@ -1227,7 +1222,7 @@ int migrate_end(void)
    return 0;
 }
 
-int wait_for_event(void)
+static int wait_for_event(void)
 {
 
     int             i;
@@ -1322,7 +1317,7 @@ int wait_for_event(void)
    return rc;
 }
 
-int wait_for_finished(void)
+static int wait_for_finished(void)
 {
     int i;
     int r;
@@ -1355,8 +1350,7 @@ int wait_for_finished(void)
     return 0;
 }
 
-
-int wait_for_ready(void)
+static int wait_for_ready(void)
 {
     int i;
     int r;
@@ -1402,7 +1396,7 @@ int migrate_finish() {
 
 
 
-int save_nonlive_one_by_one(void)
+static int save_nonlive_one_by_one(void)
 {
     int i;
     int r;
@@ -1438,7 +1432,7 @@ int save_nonlive_one_by_one(void)
     return 0;
 }
 
-int config_emus(void)
+static int config_emus(void)
 {
    int i;
 
@@ -1458,7 +1452,7 @@ int config_emus(void)
    return 0;
 }
 
-int operation_load(void)
+static int operation_load(void)
 {
    int r;
    int emu;
@@ -1532,7 +1526,7 @@ load_end:
    return r;
 }
 
-int migrate_abort(void)
+static int migrate_abort(void)
 {
     int i;
     int r;
@@ -1556,8 +1550,7 @@ int migrate_abort(void)
     return 0;
 }
 
-
-int operation_save(void)
+static int operation_save(void)
 {
    int r;
    int end_r;

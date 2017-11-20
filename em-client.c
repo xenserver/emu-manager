@@ -135,8 +135,8 @@ int em_socket_open(emu_socket_t *sock, char* path)
    return 0;
 }
 
-
-int print_jerror(json_object *jobj) {
+static int print_jerror(json_object *jobj)
+{
    int r;
    r = json_object_get_type(jobj);
    if (r == json_type_string) {
@@ -299,7 +299,8 @@ early_error:
 }
 
 
-int size_args_list(struct args_list* alist, int* char_count) {
+static int size_args_list(struct args_list* alist, int* char_count)
+{
   struct args_list* al = alist;
 
   int count = 0;
