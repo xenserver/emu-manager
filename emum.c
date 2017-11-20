@@ -466,7 +466,7 @@ static int send_xenopd_message(char* message)
 
     len = write(gFd_out, message, strlen(message));
 
-    if (len < strlen(message)) {
+    if (len < (ssize_t)strlen(message)) {
         emu_err("Failed to write to xenopsd rc=%ld", len);
         return -1;
     }
