@@ -142,7 +142,8 @@ struct emu emus[num_emus] = {
 #define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
 
 
-int calculate_done() {
+int calculate_done(void)
+{
     int i;
 
     uint64_t total_expect = 0;
@@ -447,7 +448,7 @@ stop:
 }
 
 
-int drain_messages()
+int drain_messages(void)
 {
     int r=0;
     struct pollfd pfd = { .fd = gFd_in, .events = POLLIN };
@@ -493,7 +494,8 @@ int send_xenopsd_progress(int prog)
     return 0;
 }
 
-int update_progress() {
+int update_progress(void)
+{
 
    int progress = calculate_done();
 
@@ -573,7 +575,8 @@ int send_result(struct emu* emu) {
 }
 
 
-int send_final_result() {
+int send_final_result(void)
+{
     int r;
     char* buffer = "result:0 0\n";
     r = send_xenopd_message(buffer);
@@ -728,7 +731,7 @@ EMP_COMMANDS(commands);
 
 /* Send messge to all emus */
 
-int pause_emus()
+int pause_emus(void)
 {
     int i;
     int r;
@@ -747,7 +750,7 @@ int pause_emus()
 
 
 /* This prevents stdout being buffered */
-int setenv_nobuffs()
+int setenv_nobuffs(void)
 {
     clearenv();
     if ((putenv("LD_PRELOAD=/usr/libexec/coreutils/libstdbuf.so")!=0) ||
@@ -858,8 +861,9 @@ int start_emu(char command[], char ready[]) {
 
 
 
-int startup_emus() {
-int i;
+int startup_emus(void)
+{
+    int i;
 
     for (i=0; i< num_emus; i++) {
         if (emus[i].startup) {
@@ -1049,7 +1053,8 @@ int connect_emus(void) {
    return 0;
 }
 
-int init_emus() {
+int init_emus(void)
+{
    int i;
    int r;
    struct emu* emu;
@@ -1091,7 +1096,8 @@ int init_emus() {
 }
 
 
-int request_track_emus() {
+int request_track_emus(void)
+{
    int i;
    int r;
    struct emu* emu;
@@ -1153,7 +1159,8 @@ int do_receive_emu(int emu_i)
 }
 
 
-int migrate_emus() {
+int migrate_emus(void)
+{
   int i;
   int r;
 
@@ -1180,7 +1187,8 @@ int migrate_emus() {
     return 0;
 }
 
-int migrate_paused() {
+int migrate_paused(void)
+{
     int i;
     int r;
     for (i=0; i< num_emus; i++) {
@@ -1196,7 +1204,8 @@ int migrate_paused() {
     return 0;
 }
 
-int migrate_end() {
+int migrate_end(void)
+{
    int fd;
    int i;
 
@@ -1218,7 +1227,7 @@ int migrate_end() {
    return 0;
 }
 
-int wait_for_event()
+int wait_for_event(void)
 {
 
     int             i;
@@ -1313,7 +1322,7 @@ int wait_for_event()
    return rc;
 }
 
-int wait_for_finished()
+int wait_for_finished(void)
 {
     int i;
     int r;
@@ -1347,7 +1356,7 @@ int wait_for_finished()
 }
 
 
-int wait_for_ready()
+int wait_for_ready(void)
 {
     int i;
     int r;
@@ -1393,7 +1402,7 @@ int migrate_finish() {
 
 
 
-int save_nonlive_one_by_one()
+int save_nonlive_one_by_one(void)
 {
     int i;
     int r;
@@ -1429,7 +1438,8 @@ int save_nonlive_one_by_one()
     return 0;
 }
 
-int config_emus() {
+int config_emus(void)
+{
    int i;
 
    // Convert live to non-live process
@@ -1448,7 +1458,7 @@ int config_emus() {
    return 0;
 }
 
-int operation_load()
+int operation_load(void)
 {
    int r;
    int emu;
@@ -1522,7 +1532,7 @@ load_end:
    return r;
 }
 
-int migrate_abort()
+int migrate_abort(void)
 {
     int i;
     int r;
@@ -1547,7 +1557,7 @@ int migrate_abort()
 }
 
 
-int operation_save()
+int operation_save(void)
 {
    int r;
    int end_r;
