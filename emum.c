@@ -180,18 +180,6 @@ static void free_extra_arg(struct args_list *xa)
       free(xa);
 }
 
-void free_all_args_list(struct emu *emu) {
-  struct args_list* xa= emu->extra;
-
-  emu->extra= NULL;
-
-  while (xa) {
-     struct args_list* arg = xa;
-     xa = xa->next;
-     free_extra_arg(arg);
-  }
-}
-
 static int add_extra_arg(struct emu *emu, const char* key, char* value)
 {
    struct args_list *xa;
@@ -1385,16 +1373,6 @@ static int wait_for_ready(void)
     }
     return 0;
 }
-
-
-int migrate_finish() {
-   wait_for_finished();
-
-    return 0;
-}
-
-
-
 
 static int save_nonlive_one_by_one(void)
 {
