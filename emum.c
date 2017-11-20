@@ -768,26 +768,29 @@ static int start_emu(char command[], char ready[])
    char buffer[1024];
 
    do {
-   count=0;
-   for (;*next_word==' '; next_word++);
+       count=0;
+       for (;*next_word==' '; next_word++)
+           ;
 
-   if (*next_word) {
-      for (; next_word[count]!=' ' && next_word[count]!='\0'; count++);
-         if (count) {
-            if ((next_word[0] == '%') && (next_word[1] == 'd')) {
-                buf = alloca(11);
-                snprintf(buf, 11, "%d", gDomid);
-            } else {
-                buf = alloca(count+1);
-                strncpy(buf, next_word, count);
-                buf[count]='\0';
-            }
-            my_argv[args]=buf;
-            args++;
+       if (*next_word) {
+           for (; next_word[count]!=' ' && next_word[count]!='\0'; count++)
+               ;
 
-            next_word +=count;
-         }
-      }
+           if (count) {
+               if ((next_word[0] == '%') && (next_word[1] == 'd')) {
+                   buf = alloca(11);
+                   snprintf(buf, 11, "%d", gDomid);
+               } else {
+                   buf = alloca(count+1);
+                   strncpy(buf, next_word, count);
+                   buf[count]='\0';
+               }
+               my_argv[args]=buf;
+               args++;
+
+               next_word +=count;
+           }
+       }
    } while (count);
    my_argv[args]=NULL;
 
