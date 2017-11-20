@@ -12,7 +12,12 @@ CFLAGS += -g -O1
 endif
 
 # _GNU_SOURCE for asprintf.
-CFLAGS += -Wall -Werror
+CFLAGS += -Wall \
+          -Werror \
+          -Wextra \
+          -Wstrict-prototypes \
+          -Wold-style-declaration \
+          -Wmissing-prototypes
 
 LDLIBS := -ljson-c
 
