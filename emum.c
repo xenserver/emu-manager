@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <termios.h>
+#include <signal.h>
 #include "em-client.h"
 #include <syslog.h>
 
@@ -1619,6 +1620,8 @@ int main(int argc, char *argv[])
 {
    int rc;
    char *ident;
+   struct sigaction sa;
+
    parse_args(argc, argv);
 
    if (gMode == op_end)
@@ -1630,6 +1633,14 @@ int main(int argc, char *argv[])
     rc = asprintf(&ident, "%s-%d", basename(argv[0]), gDomid);
     if (rc > 0)
         openlog(ident, LOG_PID, LOG_DAEMON);
+
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGPIPE, &sa, NULL)) {
+        emu_err("Error ignoring SIGPIPE %d, %s", errno, strerror(errno));
+        return 1;
+    }
 
    emu_info("starting ... ");
 
