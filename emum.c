@@ -792,7 +792,7 @@ static int start_emu(char command[], char ready[])
    my_argv[args]=NULL;
 
 // -------------------
-   if (pipe2( filedes, 0) == -1) {
+   if (pipe(filedes) == -1) {
      perror("pipe");
     return -1;
    }
