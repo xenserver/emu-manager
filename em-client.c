@@ -61,18 +61,31 @@ static int send_fd(int socket, int fd_to_send, char* message_buffer)
 
 }
 
-static int send_cmd(int socket, char* message_buffer)
+/*
+ * Write @count bytes of @buf to @fd, handling interruptions from signals,
+ * short writes, etc.
+ * @return 0 on success. -errno on error.
+ */
+int write_all(int fd, const void *buf, size_t count)
 {
-   int r;
-   int len  = strlen(message_buffer);
-   int offset = 0;
-   do {
-       r = send(socket, &message_buffer[offset], len-offset, MSG_NOSIGNAL);
-       if (r > 0)
-         offset += r;
-   } while (offset < len && (r == EAGAIN || r > 0));
+    ssize_t rc;
 
-   return (r <= 0) ? r : offset;
+    do {
+        rc = write(fd, buf, count);
+
+        if (rc < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK ||
+                    errno == EINTR)
+                continue;
+
+            return -errno;
+        }
+
+        count -= rc;
+        buf += rc;
+    } while (count > 0);
+
+    return 0;
 }
 
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data)
@@ -371,7 +384,7 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
    if (commands[cmd].fd && fd) {
         r = send_fd(socket_fd,  fd, out_buffer);
    } else if (!commands[cmd].fd && !fd)
-        r = send_cmd(socket_fd, out_buffer);
+        r = write_all(socket_fd, out_buffer, strlen(out_buffer));
    else {
         ERR("Invalid FD param (%d) for %s (needs fd = %d)",fd,  commands[cmd].name, commands[cmd].fd);
         goto error_free;

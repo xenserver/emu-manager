@@ -456,8 +456,7 @@ static int drain_messages(void)
 
 static int send_xenopd_message(char* message)
 {
-
-    ssize_t len;
+    int rc;
 
     emu_info("Send '%s' to xenopsd on fds %d %d",message,  gFd_in, gFd_out);
 
@@ -465,13 +464,12 @@ static int send_xenopd_message(char* message)
 
     drain_messages();
 
-    len = write(gFd_out, message, strlen(message));
+    rc = write_all(gFd_out, message, strlen(message));
 
-    if (len < (ssize_t)strlen(message)) {
-        emu_err("Failed to write to xenopsd rc=%ld", len);
-        return -1;
-    }
-   return 0;
+    if (rc)
+        emu_err("Failed to write to xenopsd %d, %s", -rc, strerror(-rc));
+
+    return rc;
 }
 
 static int send_xenopsd_progress(int prog)

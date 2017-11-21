@@ -35,3 +35,4 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data);
 int em_socket_open(emu_socket_t *sock, char* path);
 int em_socket_read(emu_socket_t* sock, int canread);
+int write_all(int fd, const void *buf, size_t count);
