@@ -569,10 +569,7 @@ static int send_result(struct emu* emu) {
 
 static int send_final_result(void)
 {
-    int r;
-    char* buffer = "result:0 0\n";
-    r = send_xenopd_message(buffer);
-    return r;
+    return send_xenopd_message("result:0 0\n");
 }
 
 static int parse_int(const char *str)
