@@ -571,6 +571,22 @@ static int send_final_result(void)
     return send_xenopd_message("result:0 0\n");
 }
 
+/*
+ * Sends @err as an error result to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
+static int send_error_result(int err)
+{
+    char msg[XENOPSD_MSG_SIZE];
+    int rc;
+
+    rc = snprintf(msg, XENOPSD_MSG_SIZE, "error:error code %d\n", err);
+    if (rc < 0)
+        return -errno;
+
+    return send_xenopd_message(msg);
+}
+
 static int parse_int(const char *str)
 {
     char *st_end;
@@ -1500,6 +1516,14 @@ static int operation_load(void)
 load_end:
    migrate_end();
 
+   if (r) {
+       int rc = send_error_result(r);
+
+       if (rc)
+           emu_err("sending error to xenopsd failed: %d, %s",
+                   -rc, strerror(-rc));
+   }
+
    return r;
 }
 
@@ -1605,8 +1629,17 @@ migrate_end:
    }
 
    if (r || end_r) {
-      emu_err("Failed!\n");
-      return 1;
+       emu_err("Failed!\n");
+
+       if (end_r && !r)
+           r = end_r;
+
+       end_r = send_error_result(r);
+       if (end_r)
+           emu_err("sending error to xenopsd failed: %d, %s",
+                   -end_r, strerror(-end_r));
+
+       return 1;
    }
 
    return 0;
