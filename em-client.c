@@ -96,7 +96,7 @@ int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data
    *sock = malloc(sizeof(emu_socket_t));
    if (*sock == NULL) {
        ERR("Failed to alloc socket record");
-       return -1;
+       return -ENOMEM;
    }
    (*sock)->fd=-1;
    (*sock)->data=data;
@@ -119,8 +119,9 @@ int em_socket_open(emu_socket_t *sock, char* path)
    socket_fd = socket(PF_UNIX, SOCK_STREAM, 0);
    if(socket_fd < 0)
    {
+      int saved_errno = errno;
       ERRN("socket()");
-      return -1;
+      return -saved_errno;
    }
 
    /* start with a clean address structure */
@@ -136,9 +137,10 @@ int em_socket_open(emu_socket_t *sock, char* path)
        (struct sockaddr *) &address,
             sizeof(struct sockaddr_un)) != 0)
    {
+       int saved_errno = errno;
        ERRN("connect()");
        close(socket_fd);
-       return -1;
+       return -saved_errno;
    }
    sock->fd=socket_fd;
    return 0;

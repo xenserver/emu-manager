@@ -4,6 +4,7 @@
 #include <string.h>
 #include <alloca.h>
 #include <stdlib.h>
+#include <assert.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -528,23 +529,12 @@ static int do_suspend_guest_callback(void)
 
 static int xod_save_emu(int emu)
 {
-   char* buffer;
-   int r;
+   char buf[XENOPSD_MSG_SIZE];
 
-   if (emu > num_emus)
-       return -1;
+   assert(emu < num_emus);
 
-   r = asprintf(&buffer, "prepare:%s\n", emus[emu].name);
-
-   if (r < 0) {
-       emu_err("asprintf failed");
-       return r;
-   }
-
-   r = send_xenopd_message_reply(buffer);
-
-   free(buffer);
-   return r;
+   snprintf(buf, XENOPSD_MSG_SIZE, "prepare:%s\n", emus[emu].name);
+   return send_xenopd_message_reply(buf);
 }
 
 static int send_result(struct emu* emu) {
@@ -733,26 +723,6 @@ static void parse_args(int argc, char *const argv[])
 
 EMP_COMMANDS(commands);
 
-/* Send messge to all emus */
-
-static int pause_emus(void)
-{
-    int i;
-    int r;
-    for (i=0; i< num_emus; i++) {
-        if (!(emus[i].enabled & STAGE_PAUSE))
-             continue;
-
-        r = em_socke_send_cmd(emus[i].sock,cmd_migrate_pause);
-        if (r < 0) {
-            emu_err("Failed to send pause messeg for %s\n",emus[i].name);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-
 /* This prevents stdout being buffered */
 static int setenv_nobuffs(void)
 {
@@ -864,17 +834,24 @@ static int start_emu(char command[], char ready[])
    }
 }
 
-
-
+/*
+ * Start all emus that need to be started.
+ * @return 0 on success. -errno on failure.
+ */
 static int startup_emus(void)
 {
     int i;
+    int rc;
 
     for (i=0; i< num_emus; i++) {
         if (emus[i].startup) {
            emu_info("Starting %s\n", emus[i].name);
-           if (start_emu(emus[i].startup, emus[i].waitfor))
-              return -1;
+           rc = start_emu(emus[i].startup, emus[i].waitfor);
+           if (rc) {
+               emu_err("Error starting %s: %d, %s",
+                       emus[i].name, -rc, strerror(-rc));
+              return rc;
+           }
         }
     }
     return 0;
@@ -1010,7 +987,11 @@ static int emu_callback(json_object *jobj, emu_socket_t* sock)
    return 0;
 }
 
-static int open_sockets(struct emu* emu)
+/*
+ * Open a connection to @emu.
+ * @return 0 on success. -errno on failure.
+ */
+static int connect_emu(struct emu* emu)
 {
 
     int r;
@@ -1018,19 +999,16 @@ static int open_sockets(struct emu* emu)
 
     snprintf(fname, 128, CONTROL_PATH, emu->name, gDomid); 
     r = em_socket_alloc(&emu->sock, &emu_callback, emu);
-    if (r<0) {
-        emu_err("Alloc socket for %s\n", emu->name);
-        return -1;
-    }
+    if (r)
+        return r;
 
-    r = em_socket_open(emu->sock, fname);
-    if (r < 0) { 
-            emu_err("Failed to connect to %s\n", emu->name);
-            return -1;
-    }
-    return 0;
+    return em_socket_open(emu->sock, fname);
 }
 
+/*
+ * Connect to all emus.
+ * @return 0 on success. -errno on failure.
+ */
 static int connect_emus(void)
 {
    int i;
@@ -1047,8 +1025,9 @@ static int connect_emus(void)
       switch (emu->proto) {
       case emp:
       case qmp:
-              if ((r = open_sockets(emu))) {
-                 emu_info("Failed to open socket for %s", emu->name);
+              if ((r = connect_emu(emu))) {
+                 emu_err("Failed to open socket for %s: %d, %s",
+                         emu->name, -r, strerror(-r));
                  return r;
               }
         break;
@@ -1057,6 +1036,10 @@ static int connect_emus(void)
    return 0;
 }
 
+/*
+ * Send migrate_init to each emu and any extra arguments required.
+ * @return 0 on success. -errno on failure.
+ */
 static int init_emus(void)
 {
    int i;
@@ -1074,20 +1057,14 @@ static int init_emus(void)
         case emp:
              emu_info("Init %s with fd %d", emu->name, emu->stream);
              r = em_socke_send_cmd_fd(emu->sock, cmd_migrate_init , emu->stream);
-             if (r < 0) {
-                 emu_err("Failed to init %s\n", emu->name);
-                 return -1;
-             }
-
+             if (r)
+                 return r;
 
              if (emu->extra) {
                   emu_info("sending extra args");
                   r = em_socke_send_cmd_args(emu->sock, cmd_set_args, emu->extra);
-
-                   if (r < 0) {
-                       emu_err("Failed to send extra agrs to %s\n", emu->name);
-                       return -1;
-                   }
+                  if (r)
+                      return r;
              }
 
         break;
@@ -1099,6 +1076,10 @@ static int init_emus(void)
    return 0;
 }
 
+/*
+ * Enable dirty page tracking and progress reporting for live emus.
+ * @return 0 on success. -errno on failure.
+ */
 static int request_track_emus(void)
 {
    int i;
@@ -1117,16 +1098,12 @@ static int request_track_emus(void)
         case emp:
 
             r = em_socke_send_cmd(emu->sock,cmd_track_dirty);
-            if (r < 0) {
-                 emu_err("Failed to request dirty tracking %s\n", emu->name);
-                 return -1;
-            }
+            if (r)
+                return r;
 
             r = em_socke_send_cmd(emu->sock,cmd_migrate_progress);
-            if (r < 0) {
-                 emu_err("Failed to request progress reporting %s\n", emu->name);
-                 return -1;
-            }
+            if (r)
+                return r;
 
         break;
         case qmp:
@@ -1157,6 +1134,10 @@ static int do_receive_emu(int emu_i)
     return 0;
 }
 
+/*
+ * Start migration for each live emu.
+ * @return 0 on success. -errno on failure.
+ */
 static int migrate_emus(void)
 {
   int i;
@@ -1169,23 +1150,26 @@ static int migrate_emus(void)
 
         r = xod_save_emu(i);
         if (r < 0) {
-             emu_err("Failed to prepare streamfor %s\n", emus[i].name);
-             return -1;
+             emu_err("Failed to prepare stream for %s: %d, %s\n",
+                     emus[i].name, -r, strerror(-r));
+             return r;
 
         }
 
         emu_info("Migrate live %d: %s", i, emus[i].name);
         r = em_socke_send_cmd(emus[i].sock,cmd_migrate_live);
-        if (r < 0) {
-            emu_err("Failed to start live migrate for %s\n", emus[i].name);
-            return -1;
-        }
+        if (r)
+            return r;
     }
 
     return 0;
 }
 
-static int migrate_paused(void)
+/*
+ * Tell all emus to pause.
+ * @return 0 on success. -errno on failure.
+ */
+static int pause_emus(void)
 {
     int i;
     int r;
@@ -1194,10 +1178,8 @@ static int migrate_paused(void)
              continue;
 
         r = em_socke_send_cmd(emus[i].sock,cmd_migrate_paused);
-        if (r < 0) {
-            emu_err("Failed to indicate paused for %s\n", emus[i].name);
-            return -1;
-        }
+        if (r)
+            return r;
     }
     return 0;
 }
@@ -1425,7 +1407,7 @@ static int save_nonlive_one_by_one(void)
     return 0;
 }
 
-static int config_emus(void)
+static void config_emus(void)
 {
    int i;
 
@@ -1442,7 +1424,6 @@ static int config_emus(void)
             emus[i].enabled = 0;
         }
    }
-   return 0;
 }
 
 static int operation_load(void)
@@ -1451,25 +1432,16 @@ static int operation_load(void)
    int emu;
    int i;
 
-   r = config_emus();
+   config_emus();
+
+   r = startup_emus();
    if (r)
        goto load_end;
 
-   /* Start EMUs * * * * * * */
-   r = startup_emus();
-   if (r) {
-       emu_err("startup failed");
-       goto load_end;
-   }
-
-   /* Make connection to EMUs * * * * * * */
    r = connect_emus();
-   if (r) {
-       emu_err("init failed");
+   if (r)
        goto load_end;
-   }
 
-  /* Init EMUs * * * * * * */
    r = init_emus();
    if (r)
        goto load_end;
@@ -1527,6 +1499,10 @@ load_end:
    return r;
 }
 
+/*
+ * Tell all emus to abort.
+ * @return 0 on success. -errno on failure.
+ */
 static int migrate_abort(void)
 {
     int i;
@@ -1538,10 +1514,8 @@ static int migrate_abort(void)
             switch (emus[i].proto) {
             case emp:
                 r = em_socke_send_cmd(emus[i].sock, cmd_migrate_abort);
-                if (r < 0) {
-                   emu_err("Failed to send msg %d for %s\n",cmd_migrate_abort ,emus[i].name);
-                   return -1;
-                }
+                if (r)
+                    return r;
             break;
             case qmp:
             break;
@@ -1558,21 +1532,16 @@ static int operation_save(void)
 
    int can_abort = true;
 
-   r = config_emus();
-  if (r)
-       goto migrate_end;
+   config_emus();
 
-   /* Start EMUs * * * * * * */
    r = startup_emus();
    if (r)
        goto migrate_end;
-
 
    r = connect_emus();
    if (r)
        goto migrate_end;
 
-   /* Init EMUs * * * * * * */
    r = init_emus();
    if (r)
        goto migrate_end;
@@ -1603,9 +1572,7 @@ static int operation_save(void)
 
    emu_info("should be suspended, send paused to emus");
 
-   pause_emus();
-
-   r = migrate_paused();
+   r = pause_emus();
    if (r)
        goto migrate_end;
 
