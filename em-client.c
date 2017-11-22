@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <syslog.h>
 #include <stdbool.h>
+#include <assert.h>
 
 #define INFO(args...) syslog(LOG_DAEMON|LOG_INFO, args)
 #define ERR(args...) syslog(LOG_DAEMON|LOG_ERR, args)
@@ -90,10 +91,8 @@ int write_all(int fd, const void *buf, size_t count)
 
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data)
 {
-   if (*sock) {
-        ERR("Expected NULL");
-        return -1;
-   }
+   assert(!*sock);
+
    *sock = malloc(sizeof(emu_socket_t));
    if (*sock == NULL) {
        ERR("Failed to alloc socket record");
@@ -115,10 +114,7 @@ int em_socket_open(emu_socket_t *sock, char* path)
    int  socket_fd;
    struct sockaddr_un address;
 
-   if (sock == NULL) {
-        ERR("NULL socket record");
-        return -1;
-   }
+   assert(sock);
 
    socket_fd = socket(PF_UNIX, SOCK_STREAM, 0);
    if(socket_fd < 0)
@@ -338,12 +334,9 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
    int socket_fd = -1;
 
    char* out_buffer = NULL;
-//   json_object *jobj;
-   if ((sock==NULL) || (sock->fd <= 0))
-   {
-       ERR("Invalid socket.");
-       return -1;
-   }
+
+   assert(sock);
+   assert(sock->fd >= 0);
 
    socket_fd = sock->fd;
 
