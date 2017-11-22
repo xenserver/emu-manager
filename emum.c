@@ -335,7 +335,6 @@ static int process_xod_line(char* buf)
 }
 
 char* xenopd_message_carry = NULL;
-int  full_xenopd_message_carry = false;
 
 static int read_xenopd_message(char ** result)
 {
@@ -349,7 +348,6 @@ static int read_xenopd_message(char ** result)
     int end;
     int resume_proc = false;
 
-   full_xenopd_message_carry = false;
    /* if already read, see if we can just resume processing */
    line = xenopd_message_carry;
    if (line) {
@@ -426,10 +424,6 @@ static int read_xenopd_message(char ** result)
 
    if (next_line[0] != '\0') {
        xenopd_message_carry = strdup(next_line);
-
-      for (end=0; (next_line[end]!='\n' && next_line[end]!='\0'); end++);
-      if (line[end]=='\n')
-           full_xenopd_message_carry = true;
        emu_info("carry");
    }
 
@@ -440,33 +434,13 @@ stop:
    return r;
 }
 
-
-static int drain_messages(void)
-{
-    int r=0;
-    struct pollfd pfd = { .fd = gFd_in, .events = POLLIN };
-    while ( full_xenopd_message_carry || poll(&pfd, 1, 0)==1) {
-        r = read_xenopd_message(NULL);
-        if (r != UNDERSTOOD_SOMETHING)
-             emu_info("Wasnt expecting that");
-    }
-    return 0;
-}
-
-
-
 static int send_xenopd_message(char* message)
 {
     int rc;
 
     emu_info("Send '%s' to xenopsd on fds %d %d",message,  gFd_in, gFd_out);
 
-    /* Check nothing waiting */
-
-    drain_messages();
-
     rc = write_all(gFd_out, message, strlen(message));
-
     if (rc)
         emu_err("Failed to write to xenopsd %d, %s", -rc, strerror(-rc));
 
