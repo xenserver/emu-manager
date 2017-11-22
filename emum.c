@@ -504,10 +504,14 @@ static int do_suspend_guest_callback(void)
 static int xod_save_emu(int emu)
 {
    char buf[XENOPSD_MSG_SIZE];
+   int rc;
 
    assert(emu < num_emus);
 
-   snprintf(buf, XENOPSD_MSG_SIZE, "prepare:%s\n", emus[emu].name);
+   rc = snprintf(buf, XENOPSD_MSG_SIZE, "prepare:%s\n", emus[emu].name);
+   if (rc < 0)
+       return -errno;
+
    return send_xenopd_message_reply(buf);
 }
 
