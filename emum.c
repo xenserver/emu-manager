@@ -54,11 +54,20 @@ static const char* supports_table[] = {"migration-v2", NULL};
 
 
 int gDomid  = 0;
-int gFd_in  = 0;
-int gFd_out = 0;
 int gLive   = 0;
 int gLastUpdateP = -1;
 enum operation_mode gMode=op_invalid;
+
+/* xenopsd data and definitions */
+#define XENOPSD_MSG_SIZE 128      /* maximum size of a message */
+#define RESTORE_MSG "restore:"
+#define ACK_MSG "done"
+
+static int xenopsd_in = -1;
+static int xenopsd_out = -1;
+static bool xenopsd_needs_ack;    /* true if we're expecting an ACK message */
+static char xenopsd_rbuf[XENOPSD_MSG_SIZE];  /* receive buffer */
+static int xenopsd_nbytes;        /* number of bytes of data in xenopsd_rbuf */
 
 enum protocol {
 emp,
@@ -214,7 +223,7 @@ static int add_extra_arg(struct emu *emu, const char* key, char* value)
 }
 
 
-static int find_emu_by_name(char name[])
+static int find_emu_by_name(const char *name)
 {
    int emu;
    for (emu=0; emu < num_emus; emu++) {
@@ -233,20 +242,6 @@ static int trim(char str[], int len)
     return i;
 }
 
-static int split(char strA[], char** strB, char delim)
-{
-   int pos;
-
-   for (pos=0; (strA[pos] > '\0' && strA[pos] != delim); pos++);
-
-   if (strA[pos] == delim)
-       *strB = &strA[pos+1];
-   else
-       *strB = NULL;
-
-   return pos;
-}
-
 static int str_lookup(const char* table[], char cmp[])
 {
     int i;
@@ -257,206 +252,169 @@ static int str_lookup(const char* table[], char cmp[])
     return -1;
 }
 
+/* Functions for communicating with xenopsd */
 
-/* xenops interface */
-
-
-static int read_tlimit(int fd, char* buf, size_t len, int time)
+/*
+ * Read up to @len bytes into @buf from @fd, waiting for up to @time seconds
+ * for data to appear. This function will handle spurious errors like EINTR.
+ * @return The number of bytes read if it succeeds. 0 if the other end closes
+ * the file descriptor. -ETIME if a time occurs. -errno if an error occurs.
+ */
+static ssize_t read_tlimit(int fd, char *buf, size_t len, int time)
 {
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
-    int r;
+    int rc;
+    ssize_t ret;
 
-    r = poll(&pfd, 1 , time * 1000);
-    if (r == 0) {
-      r = -1;
-      errno = ETIME;
+    if (time > 0) {
+        /*
+         * If a signal interrupts us we might wait a bit longer than was
+         * requested. This shouldn't be a problem.
+         */
+        while ((rc = poll(&pfd, 1 , time * 1000)) == -1 &&
+               (errno == EINTR || errno == EAGAIN))
+            ;
+        if (rc < 0)
+            return -errno;
+        if (rc == 0)
+            return -ETIME;
     }
 
-    if(r > 0)
-       r = read( fd, buf, len );
-    return r;
+    while ((ret = read(fd, buf, len)) == -1 &&
+           (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
+        ;
+    if (ret < 0)
+        return -errno;
+    return ret;
 }
 
-#define XENOPSD_MSG_SIZE 128
-
-
-
-
-const char* in_cmds[] = {"restore", NULL};
-
-#define BAD_ARGS             1
-#define GOT_SOMETHING        2
-#define UNDERSTOOD_SOMETHING 3
-
-
-static int process_xod_line(char* buf)
+/*
+ * Read from xenopsd into an internal buffer. @timeout specifies the timeout
+ * for the read in seconds.
+ * @return -ETIME if a timeout occurs. -ENOSPC if there is no space remaining
+ * in the buffer. -errno if any other error occurs. 0 if xenopsd
+ * closes the connection. Otherwise returns the number of bytes read.
+ */
+static int xenopsd_read(int timeout)
 {
-    char* cmd_s;
-    char* emu_name;
-    int r=0;
-    int cmd;
+    ssize_t ret;
 
-    emu_info("Processing \"%s\"", buf);
+    assert(xenopsd_nbytes <= XENOPSD_MSG_SIZE);
 
-    r = split(buf, &emu_name, ':');
-    if (r<0) {
-        emu_err("Read bad string '%s' from xenopsd", buf);
-        return BAD_ARGS;
-    }
+    if (xenopsd_nbytes == XENOPSD_MSG_SIZE)
+        return -ENOSPC;
 
-    if (emu_name) {
-       cmd_s= strndupa(buf, r);
-    } else {
-       cmd_s = buf;
-    }
+    ret = read_tlimit(xenopsd_in, xenopsd_rbuf + xenopsd_nbytes,
+                      XENOPSD_MSG_SIZE - xenopsd_nbytes, timeout);
+    if (ret > 0)
+        xenopsd_nbytes += ret;
 
-    cmd =  str_lookup(in_cmds, cmd_s);
-    if (cmd < 0) {
-        emu_info("Something not recognised \"%s\"", cmd_s);
-        return GOT_SOMETHING;
-    }
-    /* only one command - must be restore */
-
-    if (!emu_name) {
-       emu_err("No param provided");
-       return BAD_ARGS;
-    }
-
-    r = find_emu_by_name(emu_name);
-    if ( r < 0) {
-       emu_err("Did do not know '%s'", emu_name);
-       return BAD_ARGS;
-    }
-
-    emu_info("Got recieve for %d: %s", r , emu_name);
-    do_receive_emu(r);
-    return UNDERSTOOD_SOMETHING;
-
+    return ret;
 }
 
-char* xenopd_message_carry = NULL;
-
-static int read_xenopd_message(char ** result)
+/*
+ * Process a message, @msg, from xenopsd and perform actions depending on our
+ * internal state.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_process_message(const char *msg)
 {
-    char *buf=NULL;
-    char *line;
-    char *next_line;
-    int max = XENOPSD_MSG_SIZE-1;
-    int rec=0;
-    int r=-1;
-    int offset=0;
-    int end;
-    int resume_proc = false;
+    emu_info("Processing '%s'", msg);
 
-   /* if already read, see if we can just resume processing */
-   line = xenopd_message_carry;
-   if (line) {
-       for (end=0; (line[end]!='\n' && line[end]!='\0'); end++);
-       if (line[end]=='\n') {
-           buf = line;
-           resume_proc = true;
-           xenopd_message_carry = NULL;
-       }
-   }
-   if (!buf)
-         buf = alloca(XENOPSD_MSG_SIZE);
+    if (!strcmp(msg, ACK_MSG)) {
+        if (!xenopsd_needs_ack) {
+            emu_err("Unexpected ACK received from xenopsd");
+            return -EINVAL;
+        }
+        xenopsd_needs_ack = false;
+        return 0;
+    } else if (!strncmp(msg, RESTORE_MSG, strlen(RESTORE_MSG))) {
+        int emu;
 
-   /* carry, but not compleat line */
-   if (xenopd_message_carry) {
-      offset = strlen(xenopd_message_carry);
-      strcpy(buf, xenopd_message_carry);
-      free(xenopd_message_carry);
-      xenopd_message_carry=NULL;
-      max -= offset;
-   }
+        msg += strlen(RESTORE_MSG);
 
-   /* if need be, read some more */
-   if (!resume_proc) {
-       rec = read_tlimit(gFd_in, (buf + offset), max, XENOPSD_TIMOUT);
+        emu = find_emu_by_name(msg);
+        if (emu < 0) {
+            emu_err("Did do not know '%s'", msg);
+            return -EINVAL;
+        }
 
-       if ( rec <= 0 ) {
-           if (rec<0)
-                 emu_info("Read returned error: %s", strerror(errno));
-           else
-                 emu_info("Read return EOF");
-          r = rec;
-          goto stop;
-       }
-       rec+=offset;
-       buf[rec] = '\0';
-       emu_info("read_xenopd_message: Read return \"%s\"", buf);
+        emu_info("Got recieve for %d: %s", emu , msg);
+        return do_receive_emu(emu);
+    }
 
-   }
-
-   /* Go thought line by line */
-    next_line = buf;
-    do {
-       line = next_line;
-       /* find line */
-       for (end=0; (line[end]!='\n' && line[end]!='\0'); end++);
-
-       emu_info("read_xenopd_message: line =\"%s\", end = %d", line, end);
-
-       if (line[end]!='\n') {
-          /* Not a compleat line */
-          xenopd_message_carry = strdup(line);
-          /* r == -1 or UNDERSTOOD_SOMETHING */
-          if (r==-1) {
-               emu_err("line to long to parse");
-               errno=EMSGSIZE;
-          }
-          emu_info("not full line");
-          goto stop;
-       }
-
-      line[end]='\0';
-      r = process_xod_line(line);
-
-      next_line = &line[end+1];
-    } while ((r == UNDERSTOOD_SOMETHING) && next_line[0]!='\0');
-
-   if ( r == GOT_SOMETHING) {
-         if (result)
-             *result = strndup(line,end);
-         else
-            emu_info("got unexpected line \"%s\"", line);
-   }
-
-   if (next_line[0] != '\0') {
-       xenopd_message_carry = strdup(next_line);
-       emu_info("carry");
-   }
-
-stop:
-
-   if (resume_proc)
-      free(buf);
-   return r;
+    emu_err("Unexpected message from xenopsd: %s", msg);
+    return -EINVAL;
 }
 
-static int send_xenopd_message(char* message)
+/*
+ * Process any messages from xenopsd in the internal buffer.
+ * @return The number of messages processed on success. -errno on failure.
+ */
+static int xenopsd_process(void)
+{
+    int processed = 0;
+    int rc = 0;
+    char *ptr, *endl;
+
+    emu_info("Process xenopsd read buffer: '%.*s'",
+             xenopsd_nbytes, xenopsd_rbuf);
+
+    ptr = xenopsd_rbuf;
+    while (xenopsd_nbytes) {
+        endl = memchr(ptr, '\n', xenopsd_nbytes);
+        if (!endl) {
+            if (xenopsd_nbytes == XENOPSD_MSG_SIZE)
+                return -EMSGSIZE;
+            break;
+        }
+
+        *endl = '\0';
+        rc = xenopsd_process_message(ptr);
+        xenopsd_nbytes -= endl - ptr + 1;
+        ptr = endl + 1;
+        if (rc < 0)
+            break;
+        processed++;
+    }
+
+    memmove(xenopsd_rbuf, ptr, xenopsd_nbytes);
+
+    return rc ? rc : processed;
+}
+
+/*
+ * Send @msg to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_send_message(const char *msg)
 {
     int rc;
 
-    emu_info("Send '%s' to xenopsd on fds %d %d",message,  gFd_in, gFd_out);
+    emu_info("Send '%s' to xenopsd", msg);
 
-    rc = write_all(gFd_out, message, strlen(message));
+    rc = write_all(xenopsd_out, msg, strlen(msg));
     if (rc)
         emu_err("Failed to write to xenopsd %d, %s", -rc, strerror(-rc));
 
     return rc;
 }
 
-static int send_xenopsd_progress(int prog)
+/*
+ * Inform xenopsd about progress of the operation.
+ * @progress A value between 0 and 100 inclusive.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_send_progress(int progress)
 {
-    char* buf;
-    int r = asprintf(&buf, "info:\\b\\b\\b\\b%d\n", prog);
-    if (r <= 0)
-        return -1;
+    char buf[XENOPSD_MSG_SIZE];
+    int rc;
 
-    send_xenopd_message(buf);
-    free(buf);
-    return 0;
+    rc = snprintf(buf, XENOPSD_MSG_SIZE, "info:\\b\\b\\b\\b%d\n", progress);
+    if (rc < 0)
+        return -errno;
+
+    return xenopsd_send_message(buf);
 }
 
 static int update_progress(void)
@@ -465,85 +423,106 @@ static int update_progress(void)
    int progress = calculate_done();
 
    if (gLastUpdateP != progress) {
-       send_xenopsd_progress(progress);
+       xenopsd_send_progress(progress);
        gLastUpdateP = progress;
    }
    return progress;
 }
 
-static int send_xenopd_message_reply(char* message)
+/*
+ * Send a message to xenopsd and wait for the ACK.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_send_message_with_ack(const char *msg)
 {
-   char* buf;
-   int r = send_xenopd_message(message);
-   if (r)
-      return r;
+    int rc;
 
-   for (;;) {
-      r = read_xenopd_message(&buf);
-      if (r < 0 && errno == EINTR)
-            continue;
-      if (r == 0) {
-            emu_err("Unexpected EOF on control FD\n");
-            return -1;
+    rc = xenopsd_send_message(msg);
+    if (rc)
+        return rc;
+
+    xenopsd_needs_ack = true;
+
+    /*
+     * Wait for an ACK by repeating until a message is processed or an
+     * error occurs.
+     */
+    do {
+        rc = xenopsd_read(XENOPSD_TIMOUT);
+        if (rc == 0) {
+            emu_err("Unexpected EOF on xenopsd control fd\n");
+            return -EPIPE;
+        } else if (rc < 0) {
+            emu_err("xenopsd read error: %d, %s\n", -rc, strerror(-rc));
+            return rc;
         }
-      if (r == BAD_ARGS) {
-          emu_err("Bad responce");
-          return -1;
-      }
-      emu_info("Got something - '%s', that'll do", buf);
-      free(buf);
-      return 0;
-  }
+
+        rc = xenopsd_process();
+    } while (rc >= 0 && xenopsd_needs_ack);
+
+    return (rc < 0) ? rc : 0;
 }
 
-static int do_suspend_guest_callback(void)
+/*
+ * Send the suspend message to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_send_suspend(void)
 {
-    return send_xenopd_message_reply("suspend:\n");
+    return xenopsd_send_message_with_ack("suspend:\n");
 }
 
-static int xod_save_emu(int emu)
+/*
+ * Send the prepare message for @emu to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_send_prepare(const struct emu *emu)
 {
-   char buf[XENOPSD_MSG_SIZE];
-   int rc;
+    char buf[XENOPSD_MSG_SIZE];
+    int rc;
 
-   assert(emu < num_emus);
+    rc = snprintf(buf, XENOPSD_MSG_SIZE, "prepare:%s\n", emu->name);
+    if (rc < 0)
+        return -errno;
 
-   rc = snprintf(buf, XENOPSD_MSG_SIZE, "prepare:%s\n", emus[emu].name);
-   if (rc < 0)
-       return -errno;
-
-   return send_xenopd_message_reply(buf);
+    return xenopsd_send_message_with_ack(buf);
 }
 
-static int send_result(struct emu* emu) {
-     char* buffer;
-     int r;
-
-     if (emu->result)
-        r = asprintf(&buffer, "result:%s %s\n", emu->name, emu->result);
-     else
-        r = asprintf(&buffer, "result:%s\n", emu->name);
-
-    if (r < 0) {
-       emu_err("asprintf failed");
-       return r;
-    }
-
-    r = send_xenopd_message(buffer);
-    free(buffer);
-    return r;
-}
-
-static int send_final_result(void)
+/*
+ * Notify xenopsd that @emu is 'all done' along its result, if available.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_send_result(const struct emu *emu)
 {
-    return send_xenopd_message("result:0 0\n");
+    char buf[XENOPSD_MSG_SIZE];
+    int rc;
+
+    if (emu->result)
+        rc = snprintf(buf, XENOPSD_MSG_SIZE, "result:%s %s\n",
+                      emu->name, emu->result);
+    else
+        rc = snprintf(buf, XENOPSD_MSG_SIZE, "result:%s\n", emu->name);
+
+    if (rc < 0)
+        return -errno;
+
+    return xenopsd_send_message(buf);
+}
+
+/*
+ * Sends the 'all done' message to xenopsd after a save operation.
+ * @return 0 on success. -errno on failure.
+ */
+static int xenopsd_send_final_result(void)
+{
+    return xenopsd_send_message("result:0 0\n");
 }
 
 /*
  * Sends @err as an error result to xenopsd.
  * @return 0 on success. -errno on failure.
  */
-static int send_error_result(int err)
+static int xenopsd_send_error_result(int err)
 {
     char msg[XENOPSD_MSG_SIZE];
     int rc;
@@ -552,7 +531,7 @@ static int send_error_result(int err)
     if (rc < 0)
         return -errno;
 
-    return send_xenopd_message(msg);
+    return xenopsd_send_message(msg);
 }
 
 static int parse_int(const char *str)
@@ -656,10 +635,10 @@ static void parse_args(int argc, char *const argv[])
             return;
 
         case emu_arg_controlinfd:
-             gFd_in=parse_int(optarg);
+             xenopsd_in = parse_int(optarg);
         break;
         case emu_arg_controloutfd:
-             gFd_out=parse_int(optarg);
+             xenopsd_out = parse_int(optarg);
         break;
         case emu_arg_debuglog:
         break;
@@ -1126,7 +1105,7 @@ static int migrate_emus(void)
              continue;
 
 
-        r = xod_save_emu(i);
+        r = xenopsd_send_prepare(&emus[i]);
         if (r < 0) {
              emu_err("Failed to prepare stream for %s: %d, %s\n",
                      emus[i].name, -r, strerror(-r));
@@ -1193,13 +1172,12 @@ static int wait_for_event(void)
     fd_set          rfds;
     fd_set          wfds;
     fd_set          xfds;
-    int             max_fd = gFd_in;
+    int             max_fd = xenopsd_in;
     struct timeval  tv;
 
     int was_more = false;;
 
 /* Check for existing data */
-
 
     for (i=0; i< num_emus; i++) {
          if (!emus[i].enabled)
@@ -1231,7 +1209,7 @@ static int wait_for_event(void)
     FD_ZERO(&wfds);
     FD_ZERO(&xfds);
 
-    FD_SET(gFd_in, &rfds);
+    FD_SET(xenopsd_in, &rfds);
 
     tv.tv_sec = 30;
     tv.tv_usec = 0;
@@ -1250,11 +1228,19 @@ static int wait_for_event(void)
 
    if (rc > 0) {
 
-      if (FD_ISSET(gFd_in, &rfds)) {
-          rc = read_xenopd_message(NULL);
+      if (FD_ISSET(xenopsd_in, &rfds)) {
+          int r = xenopsd_read(0);
+          if (r == 0) {
+              emu_err("Unexpected EOF on xenopsd control fd\n");
+              return -EPIPE;
+          } else if (r < 0) {
+              emu_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
+              return r;
+          }
+          r = xenopsd_process();
           emu_info("control message rc = %d", rc);
-          if (rc <= 0 )
-             return rc;
+          if (r < 0 )
+             return r;
       }
 
       for (i=0; i< num_emus; i++) {
@@ -1359,7 +1345,7 @@ static int save_nonlive_one_by_one(void)
             continue;
         emu_info("Save non-live (%d) %s", i, emus[i].name);
 
-        r = xod_save_emu(i);
+        r = xenopsd_send_prepare(&emus[i]);
         if (r < 0)
             return r;
 
@@ -1454,7 +1440,7 @@ static int operation_load(void)
                             emu_err("EMU failed.");
                             goto load_end;
                        }
-                       send_result(&emus[i]);
+                       xenopsd_send_result(&emus[i]);
                        emu_info("emu %s complete", emus[i].name);
                        emus[i].status = result_sent;
                    }
@@ -1467,7 +1453,7 @@ load_end:
    migrate_end();
 
    if (r) {
-       int rc = send_error_result(r);
+       int rc = xenopsd_send_error_result(r);
 
        if (rc)
            emu_err("sending error to xenopsd failed: %d, %s",
@@ -1544,7 +1530,7 @@ static int operation_save(void)
    can_abort = false;
 
    emu_info("ask xenopsd to suspend");
-   r = do_suspend_guest_callback();
+   r = xenopsd_send_suspend();
    if (r)
         goto migrate_end;
 
@@ -1561,7 +1547,7 @@ static int operation_save(void)
    r = save_nonlive_one_by_one();
 
    emu_info("sending result");
-   send_final_result();
+   xenopsd_send_final_result();
 
 migrate_end:
    end_r = 0;
@@ -1579,7 +1565,7 @@ migrate_end:
        if (end_r && !r)
            r = end_r;
 
-       end_r = send_error_result(r);
+       end_r = xenopsd_send_error_result(r);
        if (end_r)
            emu_err("sending error to xenopsd failed: %d, %s",
                    -end_r, strerror(-end_r));
@@ -1619,6 +1605,8 @@ int main(int argc, char *argv[])
     }
 
    emu_info("starting ... ");
+
+   emu_info("xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
 
    switch (gMode) {
    case op_pvsave:
