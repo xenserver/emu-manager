@@ -1353,23 +1353,20 @@ static int save_nonlive_one_by_one(void)
     return 0;
 }
 
-static void config_emus(void)
+/* Set up the enabled stages for each emu. */
+static void configure_emus(void)
 {
-   int i;
+    int i;
 
-   // Convert live to non-live process
-
-   for (i=0; i < num_emus; i++) {
-
+    for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled & STAGE_ENABLED) {
             emu_info("emu %s enabled", emus[i].name);
-            if (!gLive) 
-               emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) & ~STAGE_LIVE;
-
+            if (!gLive)
+                emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) & ~STAGE_LIVE;
         } else {
             emus[i].enabled = 0;
         }
-   }
+    }
 }
 
 static int operation_load(void)
@@ -1378,7 +1375,7 @@ static int operation_load(void)
    int i;
    int remaining = 0;
 
-   config_emus();
+   configure_emus();
 
    r = startup_emus();
    if (r)
@@ -1469,7 +1466,7 @@ static int operation_save(void)
 
    int can_abort = true;
 
-   config_emus();
+   configure_emus();
 
    r = startup_emus();
    if (r)
