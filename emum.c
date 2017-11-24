@@ -152,6 +152,7 @@ struct emu emus[num_emus] = {
 #define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
 #define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
 
+static int restore_emu(struct emu *emu);
 
 static int calculate_done(void)
 {
@@ -181,8 +182,6 @@ static int calculate_done(void)
    perc = (total_expect)?(total_sent * 100) / total_expect:0;
    return (uint) perc;
 }
-
-static int do_receive_emu(int emu_i);
 
 static void free_extra_arg(struct args_list *xa)
 {
@@ -222,15 +221,21 @@ static int add_extra_arg(struct emu *emu, const char* key, char* value)
    return 0;
 }
 
-
-static int find_emu_by_name(const char *name)
+/*
+ * Return the emu whose name is @name.
+ * @return A pointer to the given emu if found, otherwise NULL. The pointer
+ * should not be freed.
+ */
+static struct emu *find_emu_by_name(const char *name)
 {
-   int emu;
-   for (emu=0; emu < num_emus; emu++) {
-       if (strcmp(emus[emu].name, name)==0)
-           return emu;
-   }
-   return -1;
+    int i;
+
+    for (i = 0; i < num_emus; i++) {
+        if (!strcmp(emus[i].name, name))
+            return &emus[i];
+    }
+
+    return NULL;
 }
 
 static int trim(char str[], int len)
@@ -329,18 +334,17 @@ static int xenopsd_process_message(const char *msg)
         xenopsd_needs_ack = false;
         return 0;
     } else if (!strncmp(msg, RESTORE_MSG, strlen(RESTORE_MSG))) {
-        int emu;
+        struct emu *emu;
 
         msg += strlen(RESTORE_MSG);
 
         emu = find_emu_by_name(msg);
-        if (emu < 0) {
+        if (!emu) {
             emu_err("Did do not know '%s'", msg);
             return -EINVAL;
         }
 
-        emu_info("Got recieve for %d: %s", emu , msg);
-        return do_receive_emu(emu);
+        return restore_emu(emu);
     }
 
     emu_err("Unexpected message from xenopsd: %s", msg);
@@ -550,7 +554,7 @@ static int parse_int(const char *str)
 }
 
 
-static int find_emu(char* emu_str, char** remaining)
+static struct emu *find_emu(char *emu_str, char **remaining)
 {
    int len;
    *remaining=NULL;
@@ -567,7 +571,7 @@ static int find_emu(char* emu_str, char** remaining)
 
 static void get_dm_param(char* arg)
 {
-   int emu=-1;
+   struct emu *emu;
    char *param=NULL;
    char *emu_name;
 
@@ -575,8 +579,7 @@ static void get_dm_param(char* arg)
 
    emu = find_emu(emu_name, &param);
 
-
-   if (emu < 0) {
+   if (!emu) {
        if (param)
            emu_err("Bad DM args, Got '%s'", emu_name);
        else
@@ -586,14 +589,14 @@ static void get_dm_param(char* arg)
        exit(1);
    }
 
-   emus[emu].enabled |= STAGE_ENABLED;
+   emu->enabled |= STAGE_ENABLED;
 
    if (param) {
-       if (emus[emu].proto == emp) {
-           emus[emu].stream = parse_int(param);
+       if (emu->proto == emp) {
+           emu->stream = parse_int(param);
        } else {
-           emu_err("Bad DM args, Got '%s', refering to %d, param '%s'", optarg, emu, param);
-           emus[emu].enabled = false;
+           emu_err("Bad DM args, Got '%s', referring to %s, param '%s'", optarg, emu->name, param);
+           emu->enabled = false;
        }
     }
     free(emu_name);
@@ -1071,23 +1074,29 @@ static int request_track_emus(void)
    return 0;
 }
 
-static int do_receive_emu(int emu_i)
+/*
+ * Send cmd_restore to @emu.
+ * @return 0 on success. -errno on failure.
+ */
+static int restore_emu(struct emu *emu)
 {
-    int r;
-    struct emu* emu = &emus[emu_i];
+    int rc;
 
-    if (emus[emu_i].status != not_done) {
-        emu_err("Request to receive emu '%s' already in progress", emu->name);
-        return -1;
+    if (emu->status != not_done) {
+        emu_err("Request to restore emu '%s' already in progress", emu->name);
+        return -EINVAL;
     }
 
-    emu_info("restore %d: %s", emu_i, emu->name);
-    r = em_socke_send_cmd(emu->sock, cmd_restore);
-    if (r < 0) {
+    emu_info("restore %s", emu->name);
+
+    rc = em_socke_send_cmd(emu->sock, cmd_restore);
+    if (rc < 0) {
         emu_err("Failed to start restore for %s\n", emu->name);
-        return -1;
+        return rc;
     }
-    emus[emu_i].status = started;
+
+    emu->status = started;
+
     return 0;
 }
 
