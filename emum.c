@@ -1164,46 +1164,42 @@ static int migrate_end(void)
    return 0;
 }
 
+/*
+ * Wait for an event to occur or process existing data.
+ * @return 0 on success. -errno on failure.
+ */
 static int wait_for_event(void)
 {
+    int i;
+    int rc, r;
+    int was_more = false;
+    fd_set rfds;
+    fd_set wfds;
+    fd_set xfds;
+    int max_fd = xenopsd_in;
+    struct timeval tv = {30, 0};  /* 30 second timeout */
 
-    int             i;
-    int             rc;
-    fd_set          rfds;
-    fd_set          wfds;
-    fd_set          xfds;
-    int             max_fd = xenopsd_in;
-    struct timeval  tv;
-
-    int was_more = false;;
-
-/* Check for existing data */
-
-    for (i=0; i< num_emus; i++) {
-         if (!emus[i].enabled)
+    /* Check for existing data */
+    for (i = 0; i < num_emus; i++) {
+        if (!emus[i].enabled)
             continue;
 
-         if (emus[i].sock->more) {
-
-            int r;
-
-            was_more=true;
+        if (emus[i].sock->more) {
+            was_more = true;
 
             r = em_socket_read(emus[i].sock, false);
             if (r < 0) {
-                 emu_err("Failed to read from %s\n",emus[i].name);
-                 return -1;
-            }
-            if (r > 0) {
-                emu_err("Unexpected return from %s\n",emus[i].name);
+                emu_err("Failed to read from %s\n", emus[i].name);
                 return -1;
             }
-         }
+            if (r > 0) {
+                emu_err("Unexpected return from %s\n", emus[i].name);
+                return -1;
+            }
+        }
     }
     if (was_more)
-       return 1;
-
-
+        return 1;
 
     FD_ZERO(&rfds);
     FD_ZERO(&wfds);
@@ -1211,59 +1207,56 @@ static int wait_for_event(void)
 
     FD_SET(xenopsd_in, &rfds);
 
-    tv.tv_sec = 30;
-    tv.tv_usec = 0;
-
-    for (i=0; i< num_emus; i++) {
+    for (i = 0; i < num_emus; i++) {
         int fd;
+
         if (!emus[i].enabled)
             continue;
-        fd =  emus[i].sock->fd;
+
+        fd = emus[i].sock->fd;
         FD_SET(fd, &rfds);
-        if (fd> max_fd)
+        if (fd > max_fd)
             max_fd = fd;
     }
 
-   rc = select(max_fd + 1, &rfds, &wfds, &xfds, &tv);
+    rc = select(max_fd + 1, &rfds, &wfds, &xfds, &tv);
 
-   if (rc > 0) {
+    if (rc > 0) {
+        if (FD_ISSET(xenopsd_in, &rfds)) {
+            r = xenopsd_read(0);
+            if (r == 0) {
+                emu_err("Unexpected EOF on xenopsd control fd\n");
+                return -EPIPE;
+            } else if (r < 0) {
+                emu_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
+                return r;
+            }
+            r = xenopsd_process();
+            emu_info("control message rc = %d", rc);
+            if (r < 0 )
+                return r;
+        }
 
-      if (FD_ISSET(xenopsd_in, &rfds)) {
-          int r = xenopsd_read(0);
-          if (r == 0) {
-              emu_err("Unexpected EOF on xenopsd control fd\n");
-              return -EPIPE;
-          } else if (r < 0) {
-              emu_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
-              return r;
-          }
-          r = xenopsd_process();
-          emu_info("control message rc = %d", rc);
-          if (r < 0 )
-             return r;
-      }
+        for (i=0; i< num_emus; i++) {
+            if (emus[i].enabled && FD_ISSET(emus[i].sock->fd, &rfds)) {
+                r = em_socket_read(emus[i].sock, true);
+                if (r < 0) {
+                    emu_err("Failed to read from %s\n",emus[i].name);
+                    return -1;
+                }
+                if (r > 0) {
+                    emu_err("Unexpected return from %s\n",emus[i].name);
+                    return -1;
+                }
+            }
+        }
 
-      for (i=0; i< num_emus; i++) {
-           if (emus[i].enabled && FD_ISSET(emus[i].sock->fd, &rfds)) {
-               int r;
-               r = em_socket_read(emus[i].sock, true);
-               if (r < 0) {
-                   emu_err("Failed to read from %s\n",emus[i].name);
-                   return -1;
-               }
-               if (r > 0) {
-                   emu_err("Unexpected return from %s\n",emus[i].name);
-                   return -1;
-               }
-           }
-      }
-   }
-   if (rc==0) {
-        errno = ETIME;
-        return -1;
-   }
+        rc = 0;
+    } else if (rc == 0) {
+        return -ETIME;
+    }
 
-   return rc;
+    return rc;
 }
 
 static int wait_for_finished(void)
