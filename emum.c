@@ -971,29 +971,29 @@ static int connect_emu(struct emu* emu)
  */
 static int connect_emus(void)
 {
-   int i;
-   int r;
-   struct emu* emu;
+    int i;
+    int rc;
+    struct emu *emu;
 
-   /* establish connection */
+    for (i = 0; i < num_emus; i++) {
+        emu = &emus[i];
+        if (!emu->enabled)
+            continue;
 
-   for (i=0; i< num_emus; i++) {
-      emu = &emus[i];
-      if (!emu->enabled)
-          continue;
-
-      switch (emu->proto) {
-      case emp:
-      case qmp:
-              if ((r = connect_emu(emu))) {
-                 emu_err("Failed to open socket for %s: %d, %s",
-                         emu->name, -r, strerror(-r));
-                 return r;
-              }
-        break;
-      }
-   }
-   return 0;
+        switch (emu->proto) {
+            case emp:
+                if ((rc = connect_emu(emu))) {
+                    emu_err("Failed to open socket for %s: %d, %s",
+                            emu->name, -rc, strerror(-rc));
+                    return rc;
+                }
+                break;
+            case qmp:
+                abort();
+                break;
+        }
+    }
+    return 0;
 }
 
 /*
