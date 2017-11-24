@@ -26,42 +26,6 @@
 
 #define UNIX_PATH_MAX 128
 
-static int send_fd(int socket, int fd_to_send, char* message_buffer)
-{
-   struct msghdr socket_message;
-   struct iovec io_vector[1];
-   struct cmsghdr *control_message = NULL;
-   /* storage space needed for an ancillary element with a paylod of length
-      is CMSG_SPACE(sizeof(length)) */
-   char ancillary_element_buffer[CMSG_SPACE(sizeof(int))];
-   int available_ancillary_element_buffer_space;
-
-   /* at least one vector of one byte must be sent */
-   io_vector[0].iov_base = message_buffer;
-   io_vector[0].iov_len = strlen(message_buffer);
-
-   /* initialize socket message */
-   memset(&socket_message, 0, sizeof(struct msghdr));
-   socket_message.msg_iov = io_vector;
-   socket_message.msg_iovlen = 1;
-
-   /* provide space for the ancillary data */
-   available_ancillary_element_buffer_space = CMSG_SPACE(sizeof(int));
-   memset(ancillary_element_buffer, 0, available_ancillary_element_buffer_space);
-   socket_message.msg_control = ancillary_element_buffer;
-   socket_message.msg_controllen = available_ancillary_element_buffer_space;
-
-   /* initialize a single ancillary data element for fd passing */
-   control_message = CMSG_FIRSTHDR(&socket_message);
-   control_message->cmsg_level = SOL_SOCKET;
-   control_message->cmsg_type = SCM_RIGHTS;
-   control_message->cmsg_len = CMSG_LEN(sizeof(int));
-   *((int *) CMSG_DATA(control_message)) = fd_to_send;
-
-   return sendmsg(socket, &socket_message, 0);
-
-}
-
 /*
  * Write @count bytes of @buf to @fd, handling interruptions from signals,
  * short writes, etc.
@@ -87,6 +51,53 @@ int write_all(int fd, const void *buf, size_t count)
     } while (count > 0);
 
     return 0;
+}
+
+/*
+ * Write @count bytes of @buf to @socket as well as an open file descriptor
+ * given by @fd_to_send. This function will handle spurious interruptions and
+ * short writes.
+ * @return 0 on success. -errno on error.
+ */
+static int send_buf_and_fd(int socket, void *buf, int count, int fd_to_send)
+{
+    struct msghdr msg = {NULL,};
+    struct iovec iov;
+    struct cmsghdr *cmsg;
+    /*
+     * Storage space needed for an ancillary element with a paylod of length
+     * is CMSG_SPACE(sizeof(length)).
+     */
+    char control[CMSG_SPACE(sizeof(int))];
+    ssize_t rc;
+
+    iov.iov_base = buf;
+    iov.iov_len = count;
+
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    memset(control, 0, CMSG_SPACE(sizeof(int)));
+    msg.msg_control = control;
+    msg.msg_controllen = CMSG_SPACE(sizeof(int));
+
+    cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    *((int *)CMSG_DATA(cmsg)) = fd_to_send;
+
+    do {
+        rc = sendmsg(socket, &msg, 0);
+    } while (rc < 0 &&
+             (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR));
+
+    if (rc < 0)
+        return -errno;
+    else if (rc < count)
+        return write_all(socket, buf + rc, count - rc);
+    else
+        return 0;
 }
 
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data)
@@ -377,7 +388,7 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
   }
 
    if (commands[cmd].fd && fd) {
-        r = send_fd(socket_fd,  fd, out_buffer);
+        r = send_buf_and_fd(socket_fd, out_buffer, strlen(out_buffer), fd);
    } else if (!commands[cmd].fd && !fd)
         r = write_all(socket_fd, out_buffer, strlen(out_buffer));
    else {
