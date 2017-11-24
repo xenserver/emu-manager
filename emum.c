@@ -62,6 +62,9 @@ stage_stopcopy
 
 #define XENOPSD_TIMOUT (60 * 2)
 
+#define CMD_START_TIMEOUT 30
+#define CMD_START_RBUF_LEN 128
+
 #define STAGE_ENABLED  (1 << stage_enabled)
 #define STAGE_START    (1 << stage_start)
 #define STAGE_INIT     (1 << stage_init)
@@ -89,11 +92,11 @@ struct data_stats {
    int iter;
 };
 
-
 struct emu {
     char *name;
-    char *startup;
+    char **startup;
     char *waitfor;
+    unsigned int waitfor_size;
     enum protocol proto;
     int enabled;
 
@@ -111,18 +114,22 @@ struct emu {
     struct data_stats* data_stats;
 };
 
-
+char *xenguest_args[] = {
+    "/usr/libexec/xen/bin/xenguest",
+    "-debug",
+    "-domid", "%d",
+    "-controloutfd", "2",
+    "-controlinfd", "0",
+    "-mode", "listen",
+    NULL,
+};
 
 #define num_emus 3
-
-#define XENGUEST_ARGS  "/usr/libexec/xen/bin/xenguest -debug -domid %d -controloutfd 2 -controlinfd 0 -mode listen"
-
 struct emu emus[num_emus] = {
-//   name      , startup               , proto, enabled,                   livech , gues_tot, sock, stream, status, result, err, extra, stats
-    {"xenguest", XENGUEST_ARGS, "Ready", emp, (FULL_LIVE | STAGE_ENABLED) , true  , 1000000, NULL,     0  , not_done, NULL, 0   , NULL, NULL},
-    {"vgpu"    , NULL         , NULL   , emp, FULL_LIVE                   , false , 100000,  NULL,     0  , not_done, NULL, 0   , NULL, NULL},
-    {"qemu"    , NULL         , NULL   , qmp, FULL_NONLIVE                , false , 10,      NULL,     0  , not_done, NULL, 0   , NULL, NULL}
-
+/*   name,       startup,       waitfor,   waitfor_size, proto, enabled,                     live_check, exp_total, sock, stream, status,   result, error, extra, data_stats */
+    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_ENABLED), true,       1000000,   NULL, 0,      not_done, NULL,   0,     NULL,  NULL},
+    {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,                   false ,     100000,    NULL, 0,      not_done, NULL,   0,     NULL,  NULL},
+    {"qemu",     NULL,          NULL,      0,            qmp,   FULL_NONLIVE,                false,      10,        NULL, 0,      not_done, NULL,   0,     NULL,  NULL}
 };
 
 #define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
@@ -174,15 +181,6 @@ static struct emu *find_emu_by_name(const char *name)
     }
 
     return NULL;
-}
-
-static int trim(char str[], int len)
-{
-    int i;
-    str[len]='\0';
-    for (i=0; str[i]>0x1f; i++);
-    str[i]='\0';
-    return i;
 }
 
 static int str_lookup(const char* table[], char cmp[])
@@ -699,6 +697,23 @@ static void parse_args(int argc, char *argv[])
 
 EMP_COMMANDS(commands);
 
+/* Given @command, a list of program arguments, substitute all parameterized
+ * arguments. This modifies @command.
+ * @return 0 on success. -errno on failure.
+ */
+static int substitute_args(char **command)
+{
+   while (*command) {
+       if (!strcmp(*command, "%d")) {
+           if (asprintf(command, "%d", gDomid) < 0)
+               return -errno;
+       }
+       command++;
+   }
+
+   return 0;
+}
+
 /* This prevents stdout being buffered */
 static int setenv_nobuffs(void)
 {
@@ -711,103 +726,67 @@ static int setenv_nobuffs(void)
     return 0;
 }
 
-static int start_emu(char command[], char ready[])
+/*
+ * Execute @command and wait for it to signal that it has started by
+ * matching @waitfor_size bytes of its stdout against @waitfor.
+ * @return 0 on success. -errno on failure.
+ */
+static int exec_command(char **command,
+                        char *waitfor, unsigned int waitfor_size)
 {
-  int filedes[2];
+    int comm[2];
+    pid_t pid;
+    ssize_t ret;
+    size_t nbytes = 0;
+    char buf[CMD_START_RBUF_LEN];
 
+    if (pipe(comm) == -1)
+        return -errno;
 
-   char *buf;
-   const char    *my_argv[64];
-   int args=0;
+    pid = fork();
+    if (pid == -1) {
+        close(comm[0]);
+        close(comm[1]);
+        return -errno;
+    } else if (pid == 0) {
+        int rc;
 
-   char *next_word= command;
-   int count=0;
-   pid_t   my_pid;
-   char buffer[1024];
+        while ((rc = dup2(comm[1], STDOUT_FILENO)) == -1 && (errno == EINTR)) {}
 
-   do {
-       count=0;
-       for (;*next_word==' '; next_word++)
-           ;
+        if (rc < 0)
+            _exit(1);
 
-       if (*next_word) {
-           for (; next_word[count]!=' ' && next_word[count]!='\0'; count++)
-               ;
+        close(comm[1]);
+        close(comm[0]);
 
-           if (count) {
-               if ((next_word[0] == '%') && (next_word[1] == 'd')) {
-                   buf = alloca(11);
-                   snprintf(buf, 11, "%d", gDomid);
-               } else {
-                   buf = alloca(count+1);
-                   strncpy(buf, next_word, count);
-                   buf[count]='\0';
-               }
-               my_argv[args]=buf;
-               args++;
+        setenv_nobuffs();
 
-               next_word +=count;
-           }
-       }
-   } while (count);
-   my_argv[args]=NULL;
+        execvp(command[0], command);
+        _exit(1);
+    }
 
-// -------------------
-   if (pipe(filedes) == -1) {
-     perror("pipe");
-    return -1;
-   }
+    close(comm[1]);
 
-   emu_info(" fd = %d\n", filedes[1]);
+    do {
+        ret = read_tlimit(comm[0], buf + nbytes,
+                          CMD_START_RBUF_LEN - nbytes, CMD_START_TIMEOUT);
+        if (ret < 0) {
+            goto out;
+        } else if (ret == 0) {
+            ret = -EPIPE;
+            goto out;
+        }
+        nbytes += ret;
 
-   my_pid = fork();
+        if (nbytes == waitfor_size) {
+            ret = !memcmp(buf, waitfor, waitfor_size) ? 0 : -EINVAL;
+            goto out;
+        }
+    } while (nbytes < waitfor_size);
 
-   if (my_pid == -1) {
-      perror("forked");
-      return -1;
-   } else if (my_pid == 0) {
-      setvbuf(stdout, NULL, _IONBF, 0);
-
-      while ((dup2(filedes[1], STDOUT_FILENO) == -1) && (errno == EINTR)) {}
-
-      close(filedes[1]);
-      close(filedes[0]);
-
-      setenv_nobuffs();
-
-      execvp(my_argv[0], (char **)my_argv);
-      perror("child process execve failed :");
-      exit(1);
-   }
-
-   emu_info("Parent waiting\n");
-   // --------------------
-
-   close(filedes[1]);
-
-   while (1) {
-
-      ssize_t count = read(filedes[0], buffer, sizeof(buffer));
-      emu_info("--\n");
-      if (count == -1) {
-         if (errno == EINTR) {
-            continue;
-         } else {
-            perror("read");
-           return -1;
-         }
-      } else if (count == 0) {
-         emu_info("EOF");
-         return -1;
-      } else {
-          trim(buffer, count);
-          if (strcmp(buffer, ready)==0) { 
-              emu_info("emu ready");
-              return 0;
-          }
-          emu_info("Ignoring \"%s\"\n", buffer);
-      }
-   }
+out:
+    close(comm[0]);
+    return ret;
 }
 
 static int process_status_stats(struct emu* emu, int iter, int sent, int rem)
@@ -952,7 +931,16 @@ static int startup_emus(void)
     for (i = 0; i < num_emus; i++) {
         if (emus[i].startup) {
             emu_info("Starting %s\n", emus[i].name);
-            rc = start_emu(emus[i].startup, emus[i].waitfor);
+
+            rc = substitute_args(emus[i].startup);
+            if (rc) {
+                emu_err("Error substituting arguments for %s: %d, %s",
+                        emus[i].name, -rc, strerror(-rc));
+                return rc;
+            }
+
+            rc = exec_command(emus[i].startup,
+                              emus[i].waitfor, emus[i].waitfor_size);
             if (rc) {
                 emu_err("Error starting %s: %d, %s",
                         emus[i].name, -rc, strerror(-rc));
