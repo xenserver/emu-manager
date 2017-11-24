@@ -310,9 +310,9 @@ early_error:
 }
 
 
-static int size_args_list(struct args_list* alist, int* char_count)
+static int size_args_list(struct argument *alist, int *char_count)
 {
-  struct args_list* al = alist;
+  struct argument *al = alist;
 
   int count = 0;
   int chars = 0;
@@ -327,7 +327,7 @@ static int size_args_list(struct args_list* alist, int* char_count)
 }
 
 
-int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int fd, struct args_list* args)
+int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int fd, struct argument *args)
 {
    const int buffersize = 128;
    int cmd;
@@ -352,7 +352,7 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
 
    if (args) {
        int buf_size;
-       struct args_list* al = args;
+       struct argument *al = args;
        
        r = size_args_list(args, &buf_size);
        buf_size += strlen("\"\":\"\", ") * r + strlen("} }"); /* note: \0 takes spair ',' space */
@@ -427,7 +427,7 @@ int em_socke_send_cmd_fd(emu_socket_t* sock, enum command_num cmd_no, int fd)
 }
 
 
-int em_socke_send_cmd_args(emu_socket_t* sock, enum command_num cmd_no, struct args_list* args)
+int em_socke_send_cmd_args(emu_socket_t* sock, enum command_num cmd_no, struct argument *args)
 {
     return em_socke_send_cmd_fd_args(sock, cmd_no, 0, args);
 }

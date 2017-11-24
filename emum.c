@@ -107,7 +107,7 @@ struct emu {
     enum state status;
     char* result;
     int error;
-    struct args_list* extra;
+    struct argument *extra;
     struct data_stats* data_stats;
 };
 
@@ -157,44 +157,6 @@ static int calculate_done(void)
 
    perc = (total_expect)?(total_sent * 100) / total_expect:0;
    return (uint) perc;
-}
-
-static void free_extra_arg(struct args_list *xa)
-{
-      free(xa->key);
-      free(xa->value);
-      free(xa);
-}
-
-static int add_extra_arg(struct emu *emu, const char* key, char* value)
-{
-   struct args_list *xa;
-   struct args_list **lp;
-
-   xa = malloc(sizeof(struct args_list));
-
-   if (xa == NULL)
-        return -1;
-
-   xa->key = strdup(key);
-   xa->value = strdup(value);
-   xa->next = NULL;
-
-   if (xa->key == NULL || xa->value == NULL) {
-       free_extra_arg(xa);
-       emu_err("Failed to alloc extra arg");
-       return -1;
-   }
-
-   emu_info("LLS");
-   lp = &emu->extra;
-
-   while (*lp) {
-       emu_info("LL");
-       lp = &((*lp)->next);
-   }
-   *lp = xa;
-   return 0;
 }
 
 /*
@@ -514,6 +476,41 @@ static int xenopsd_send_error_result(int err)
     return xenopsd_send_message(msg);
 }
 
+/* Functions for program startup. */
+
+/*
+ * Append the given @key and @value pair to @emu's list of extra arguments.
+ * @return 0 on success. -errno on failure.
+ */
+static int add_extra_arg(struct emu *emu, const char *key, const char *value)
+{
+    struct argument *xa;
+    struct argument **lp;
+
+    xa = malloc(sizeof(*xa));
+    if (!xa)
+        return -errno;
+
+    xa->key = strdup(key);
+    xa->value = strdup(value);
+    xa->next = NULL;
+
+    if (!xa->key || !xa->value) {
+        free(xa->key);
+        free(xa->value);
+        free(xa);
+        return -errno;
+    }
+
+    lp = &emu->extra;
+    while (*lp) {
+        lp = &(*lp)->next;
+    }
+    *lp = xa;
+
+    return 0;
+}
+
 /*
  * Parses an integer from a string given by @str. Except for whitespace at the
  * start, the string may not have leading or trailing characters that do not
@@ -623,7 +620,7 @@ static void parse_args(int argc, char *argv[])
         NULL
     };
 
-    int c;
+    int c, rc;
 
     for(;;) {
         int arg_index = 0;
@@ -671,7 +668,12 @@ static void parse_args(int argc, char *argv[])
             case arg_xg_console_port:
                 emu_info("adding xenguest special option %s = %s",
                          args[arg_index].name, optarg);
-                add_extra_arg(&emus[0], args[arg_index].name, optarg);
+                rc = add_extra_arg(&emus[0], args[arg_index].name, optarg);
+                if (rc) {
+                    emu_err("Error adding xenguest argument: %d, %s",
+                            -rc, strerror(-rc));
+                    exit(1);
+                }
                 break;
             case arg_fork: /* ignore */
                 break;
@@ -1586,13 +1588,21 @@ int main(int argc, char *argv[])
 
    switch (gMode) {
    case op_pvsave:
-       add_extra_arg(&emus[0], "pv", "true");
+       rc = add_extra_arg(&emus[0], "pv", "true");
+       if (rc) {
+           emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
+           return 1;
+       }
        /* fall though */
    case op_save:
       setvbuf(stdout, NULL, _IONBF, 0);
       return operation_save();
    case op_pvrestore:
-      add_extra_arg(&emus[0], "pv", "true");
+      rc = add_extra_arg(&emus[0], "pv", "true");
+      if (rc) {
+          emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
+          return 1;
+      }
       /* fall though */
    case op_restore:
       return operation_load();
