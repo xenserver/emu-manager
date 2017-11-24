@@ -1002,38 +1002,36 @@ static int connect_emus(void)
  */
 static int init_emus(void)
 {
-   int i;
-   int r;
-   struct emu* emu;
+    int i;
+    int rc;
+    struct emu *emu;
 
-   /* init each emu */
-
-   for (i=0; i< num_emus; i++) {
+    for (i = 0; i < num_emus; i++) {
         emu = &emus[i];
         if (!(emu->enabled && STAGE_INIT))
-             continue;
+            continue;
 
         switch (emu->proto) {
-        case emp:
-             emu_info("Init %s with fd %d", emu->name, emu->stream);
-             r = em_socke_send_cmd_fd(emu->sock, cmd_migrate_init , emu->stream);
-             if (r)
-                 return r;
+            case emp:
+                rc = em_socke_send_cmd_fd(emu->sock, cmd_migrate_init,
+                                          emu->stream);
+                if (rc)
+                    return rc;
 
-             if (emu->extra) {
-                  emu_info("sending extra args");
-                  r = em_socke_send_cmd_args(emu->sock, cmd_set_args, emu->extra);
-                  if (r)
-                      return r;
-             }
+                if (emu->extra) {
+                    rc = em_socke_send_cmd_args(emu->sock, cmd_set_args,
+                                                emu->extra);
+                    if (rc)
+                        return rc;
+                }
 
-        break;
-        case qmp:
-
-        break;
+                break;
+            case qmp:
+                abort();
+                break;
         }
-   }
-   return 0;
+    }
+    return 0;
 }
 
 /*
