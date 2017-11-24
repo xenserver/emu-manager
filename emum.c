@@ -1129,15 +1129,17 @@ static int migrate_emus(void)
 static int pause_emus(void)
 {
     int i;
-    int r;
-    for (i=0; i< num_emus; i++) {
-        if (!(emus[i].enabled & STAGE_PAUSED))
-             continue;
+    int rc;
 
-        r = em_socke_send_cmd(emus[i].sock,cmd_migrate_paused);
-        if (r)
-            return r;
+    for (i = 0; i < num_emus; i++) {
+        if (!(emus[i].enabled & STAGE_PAUSED))
+            continue;
+
+        rc = em_socke_send_cmd(emus[i].sock, cmd_migrate_paused);
+        if (rc)
+            return rc;
     }
+
     return 0;
 }
 
