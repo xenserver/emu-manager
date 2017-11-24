@@ -1364,8 +1364,8 @@ static void config_emus(void)
 static int operation_load(void)
 {
    int r;
-   int emu;
    int i;
+   int remaining = 0;
 
    config_emus();
 
@@ -1381,43 +1381,34 @@ static int operation_load(void)
    if (r)
        goto load_end;
 
+   emu_info("Wait for completion");
+   /* Count number of emus we need to wait for. */
+   for (i = 0; i < num_emus; i++) {
+       if (emus[i].enabled)
+           remaining++;
+   }
+   while (remaining) {
+       r = wait_for_event();
+       if (r < 0 && r != -ETIME) {
+           emu_err("Error waiting for events: %d, %s",
+                   -r, strerror(-r));
+           goto load_end;
+       }
 
-   emu_info("Waiting for xenopsd");
-   /* Wait for everything to finish */
-   for (emu=0; emu < num_emus; emu++)
-       if (emus[emu].enabled)
-           while (emus[emu].status != result_sent) {
-
-               for (i=0; i < num_emus; i++) {
-                  if (emus[i].enabled) {
-                      emu_info("%c%s %s", (i==emu)?'*':' ', emus[i].name, (emus[i].status==started)?"Waiting": ((emus[i].status>started)?"Done":"Pending"));
-                  }
-               }
-               /* watch xenopd, to see what's comming */
-               r = wait_for_event();
-               if (r < 0 && errno != EINTR && errno != ETIME) {
-                   emu_err("Error waiting on events %s", strerror(errno) );
-                   goto load_end;
-               } else if (r == 0) {
-                   emu_err("Recived EOF");
+       for (i = 0; i < num_emus; i++) {
+           if (emus[i].status == all_done) {
+               if (emus[i].error) {
                    r = -1;
+                   emu_err("EMU failed.");
                    goto load_end;
                }
-
-               for (i=0; i < num_emus; i++) {
-                   if (emus[i].status == all_done) {
-                       if (emus[i].error) {
-                            r = -1;
-                            emu_err("EMU failed.");
-                            goto load_end;
-                       }
-                       xenopsd_send_result(&emus[i]);
-                       emu_info("emu %s complete", emus[i].name);
-                       emus[i].status = result_sent;
-                   }
-               }
-
+               xenopsd_send_result(&emus[i]);
+               emu_info("emu %s complete", emus[i].name);
+               emus[i].status = result_sent;
+               remaining--;
            }
+       }
+   }
    r = 0;
 
 load_end:
