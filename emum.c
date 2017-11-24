@@ -538,19 +538,25 @@ static int xenopsd_send_error_result(int err)
     return xenopsd_send_message(msg);
 }
 
+/*
+ * Parses an integer from a string given by @str. Except for whitespace at the
+ * start, the string may not have leading or trailing characters that do not
+ * form part of the number. Exits with status 1 if an error occurs.
+ */
 static int parse_int(const char *str)
 {
-    char *st_end;
-    int result;
+    char *end;
+    long result;
 
-    result = strtol(str, &st_end, 10);
+    errno = 0;
+    result = strtol(str, &end, 10);
 
-    if (*st_end != '\0') {
-        emu_err("Cannot parse '%s' as a valid integer\n", str);
+    if (errno || *end || (int)result != result) {
+        emu_err("Cannot parse '%s' as a valid integer", str);
         exit(1);
     }
 
-    return result;
+    return (int)result;
 }
 
 /*
