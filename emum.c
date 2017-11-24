@@ -1104,28 +1104,26 @@ static int restore_emu(struct emu *emu)
  * Start migration for each live emu.
  * @return 0 on success. -errno on failure.
  */
-static int migrate_emus(void)
+static int migrate_live_emus(void)
 {
-  int i;
-  int r;
+    int i;
+    int rc;
 
-  for (i=0; i< num_emus; i++) {
+    for (i = 0; i < num_emus; i++) {
         if (!(emus[i].enabled & STAGE_LIVE))
-             continue;
+            continue;
 
-
-        r = xenopsd_send_prepare(&emus[i]);
-        if (r < 0) {
-             emu_err("Failed to prepare stream for %s: %d, %s\n",
-                     emus[i].name, -r, strerror(-r));
-             return r;
-
+        rc = xenopsd_send_prepare(&emus[i]);
+        if (rc < 0) {
+            emu_err("Failed to prepare stream for %s: %d, %s\n",
+                    emus[i].name, -rc, strerror(-rc));
+            return rc;
         }
 
         emu_info("Migrate live %d: %s", i, emus[i].name);
-        r = em_socke_send_cmd(emus[i].sock,cmd_migrate_live);
-        if (r)
-            return r;
+        rc = em_socke_send_cmd(emus[i].sock, cmd_migrate_live);
+        if (rc)
+            return rc;
     }
 
     return 0;
@@ -1488,7 +1486,7 @@ static int operation_save(void)
        if (r)
            goto migrate_end;
 
-       r = migrate_emus();
+       r = migrate_live_emus();
        if (r)
            goto migrate_end;
 
