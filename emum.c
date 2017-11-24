@@ -20,25 +20,6 @@
 #include <poll.h>
 #include <stdbool.h>
 
-enum emu_mon_args {
-emu_arg_controlinfd,
-emu_arg_controloutfd,
-emu_arg_debuglog,
-emu_arg_fd,
-emu_arg_domid,
-emu_arg_live,
-emu_arg_dm,
-
-emu_arg_mode,
-
-/* resume args */
-emu_arg_xg_store_port,
-emu_arg_xg_console_port,
-emu_arg_fork,
-
-emu_arg_supports
-};
-
 enum operation_mode {
    op_invalid = -1,
    op_save    = 0,
@@ -48,13 +29,8 @@ enum operation_mode {
    op_end
 };
 
-static const char* mode_names[] = {"hvm_save","save", "hvm_restore", "restore", NULL};
-
-static const char* supports_table[] = {"migration-v2", NULL};
-
-
 int gDomid  = 0;
-int gLive   = 0;
+static bool gLive;
 int gLastUpdateP = -1;
 enum operation_mode gMode=op_invalid;
 
@@ -596,28 +572,56 @@ static void parse_dm_arg(char *arg)
     }
 }
 
-static void parse_args(int argc, char *const argv[])
+/*
+ * Parse program arguments given by @argc and @argv.
+ * Exits with status 1 if an error occurs.
+ */
+static void parse_args(int argc, char *argv[])
 {
-    static const struct option args[] = {
-        { "controlinfd" , required_argument, NULL, emu_arg_controlinfd, },
-        { "controloutfd", required_argument, NULL, emu_arg_controloutfd, },
-        { "debuglog"    , required_argument, NULL, emu_arg_debuglog, },
-        { "fd"          , required_argument, NULL, emu_arg_fd, },
-        { "domid"       , required_argument, NULL, emu_arg_domid, },
-        { "live"        , no_argument      , NULL, emu_arg_live, },
-        { "dm"          , required_argument, NULL, emu_arg_dm, },
-
-        { "mode"        , required_argument, NULL, emu_arg_mode, },
-
-
-        {"store_port", required_argument,    NULL, emu_arg_xg_store_port, },
-        {"console_port", required_argument,  NULL, emu_arg_xg_console_port, },
-        {"fork", required_argument,          NULL, emu_arg_fork,          },
-
-        {"supports"     , required_argument, NULL, emu_arg_supports, },
-        { NULL },
+    enum {
+        arg_controlinfd,
+        arg_controloutfd,
+        arg_debuglog,
+        arg_fd,
+        arg_domid,
+        arg_live,
+        arg_dm,
+        arg_mode,
+        arg_xg_store_port,
+        arg_xg_console_port,
+        arg_fork,
+        arg_supports
     };
 
+    static const struct option args[] = {
+        {"controlinfd",  required_argument, NULL,   arg_controlinfd},
+        {"controloutfd", required_argument, NULL,   arg_controloutfd},
+        {"debuglog",     required_argument, NULL,   arg_debuglog},
+        {"fd",           required_argument, NULL,   arg_fd},
+        {"domid",        required_argument, NULL,   arg_domid},
+        {"live",         required_argument, NULL,   arg_live},
+        {"dm",           required_argument, NULL,   arg_dm},
+        {"mode",         required_argument, NULL,   arg_mode},
+        {"store_port",   required_argument, NULL,   arg_xg_store_port},
+        {"console_port", required_argument, NULL,   arg_xg_console_port},
+        {"fork",         required_argument, NULL,   arg_fork},
+        {"supports",     required_argument, NULL,   arg_supports},
+        {NULL},
+    };
+
+    /* These mode names correspond with enum operation_mode. */
+    static const char *mode_names[] = {
+        "hvm_save",
+        "save",
+        "hvm_restore",
+        "restore",
+        NULL
+    };
+
+    static const char *supports_table[] = {
+        "migration-v2",
+        NULL
+    };
 
     int c;
 
@@ -625,52 +629,69 @@ static void parse_args(int argc, char *const argv[])
         int arg_index = 0;
 
         c = getopt_long_only(argc, argv, "", args, &arg_index);
+        if (c == -1)
+            break;
+
+        emu_info("c=%d, arg_index=%d, optarg=%s", c, arg_index, optarg);
 
         switch (c) {
-        case -1:
-            return;
-
-        case emu_arg_controlinfd:
-             xenopsd_in = parse_int(optarg);
-        break;
-        case emu_arg_controloutfd:
-             xenopsd_out = parse_int(optarg);
-        break;
-        case emu_arg_debuglog:
-        break;
-        case emu_arg_fd:
-         emus[0].stream = parse_int(optarg);
-        break;
-        case emu_arg_domid:
-             gDomid=parse_int(optarg);
-        break;
-        case emu_arg_live:
-             gLive = 1;
-        break;
-        case emu_arg_dm:
-             parse_dm_arg(optarg);
-        break;
-        case emu_arg_mode:
-           gMode = str_lookup(mode_names, optarg);
-           if (gMode<0)
-               emu_err("Don't know mode  '%s'",optarg);
-        break;
-
-        case emu_arg_xg_store_port:
-        case emu_arg_xg_console_port:
-             emu_info("adding xenguest special option %s = %s", args[arg_index].name, optarg);
-             add_extra_arg(&emus[0], args[arg_index].name, optarg);
-        break;
-        case emu_arg_fork: /* ignore */
-        break;
-        case emu_arg_supports:
-             gMode = op_end;
-             if (str_lookup(supports_table, optarg) >=0)
-                 printf("true\n");
-             else
-                 printf("false\n");
-        break;
+            case arg_controlinfd:
+                xenopsd_in = parse_int(optarg);
+                break;
+            case arg_controloutfd:
+                xenopsd_out = parse_int(optarg);
+                break;
+            case arg_debuglog:
+                break;
+            case arg_fd:
+                emus[0].stream = parse_int(optarg);
+                break;
+            case arg_domid:
+                gDomid = parse_int(optarg);
+                break;
+            case arg_live:
+                if (!strcmp(optarg, "true")) {
+                    gLive = true;
+                } else if (strcmp(optarg, "false")) {
+                    emu_err("Unknown live argument: '%s'", optarg);
+                    exit(1);
+                }
+                break;
+            case arg_dm:
+                parse_dm_arg(optarg);
+                break;
+            case arg_mode:
+                gMode = str_lookup(mode_names, optarg);
+                if (gMode < 0) {
+                    emu_err("Unknown mode '%s'", optarg);
+                    exit(1);
+                }
+                break;
+            case arg_xg_store_port:
+            case arg_xg_console_port:
+                emu_info("adding xenguest special option %s = %s",
+                         args[arg_index].name, optarg);
+                add_extra_arg(&emus[0], args[arg_index].name, optarg);
+                break;
+            case arg_fork: /* ignore */
+                break;
+            case arg_supports:
+                gMode = op_end;
+                if (str_lookup(supports_table, optarg) >= 0)
+                    printf("true\n");
+                else
+                    printf("false\n");
+                break;
+            default:
+                emu_err("Error parsing arguments");
+                exit(1);
+                break;
         }
+    }
+
+    if (optind < argc) {
+        emu_err("Unknown extra arguments");
+        exit(1);
     }
 }
 
