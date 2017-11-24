@@ -1042,36 +1042,32 @@ static int init_emus(void)
  */
 static int request_track_emus(void)
 {
-   int i;
-   int r;
-   struct emu* emu;
+    int i;
+    int rc;
+    struct emu *emu;
 
-   /* init each emu */
-
-   for (i=0; i< num_emus; i++) {
+    for (i = 0; i < num_emus; i++) {
         emu = &emus[i];
-        if (!(emu->enabled && STAGE_LIVE  ))
-             continue;
-
+        if (!(emu->enabled && STAGE_LIVE))
+            continue;
 
         switch (emu->proto) {
-        case emp:
+            case emp:
+                rc = em_socke_send_cmd(emu->sock, cmd_track_dirty);
+                if (rc)
+                    return rc;
 
-            r = em_socke_send_cmd(emu->sock,cmd_track_dirty);
-            if (r)
-                return r;
+                rc = em_socke_send_cmd(emu->sock, cmd_migrate_progress);
+                if (rc)
+                    return rc;
 
-            r = em_socke_send_cmd(emu->sock,cmd_migrate_progress);
-            if (r)
-                return r;
-
-        break;
-        case qmp:
-
-        break;
+                break;
+            case qmp:
+                abort();
+                break;
         }
-   }
-   return 0;
+    }
+    return 0;
 }
 
 /*
