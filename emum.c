@@ -794,29 +794,6 @@ static int start_emu(char command[], char ready[])
    }
 }
 
-/*
- * Start all emus that need to be started.
- * @return 0 on success. -errno on failure.
- */
-static int startup_emus(void)
-{
-    int i;
-    int rc;
-
-    for (i=0; i< num_emus; i++) {
-        if (emus[i].startup) {
-           emu_info("Starting %s\n", emus[i].name);
-           rc = start_emu(emus[i].startup, emus[i].waitfor);
-           if (rc) {
-               emu_err("Error starting %s: %d, %s",
-                       emus[i].name, -rc, strerror(-rc));
-              return rc;
-           }
-        }
-    }
-    return 0;
-}
-
 static int process_status_stats(struct emu* emu, int iter, int sent, int rem)
 {
    int ready = (emu->status == live_done);
@@ -945,6 +922,29 @@ static int emu_callback(json_object *jobj, emu_socket_t* sock)
 
 
    return 0;
+}
+
+/*
+ * Start all emus that need to be started.
+ * @return 0 on success. -errno on failure.
+ */
+static int startup_emus(void)
+{
+    int i;
+    int rc;
+
+    for (i = 0; i < num_emus; i++) {
+        if (emus[i].startup) {
+            emu_info("Starting %s\n", emus[i].name);
+            rc = start_emu(emus[i].startup, emus[i].waitfor);
+            if (rc) {
+                emu_err("Error starting %s: %d, %s",
+                        emus[i].name, -rc, strerror(-rc));
+                return rc;
+            }
+        }
+    }
+    return 0;
 }
 
 /*
