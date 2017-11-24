@@ -1303,39 +1303,42 @@ static int wait_on_condition(bool (*check)(const struct emu *emu))
     return 0;
 }
 
+/*
+ * Sequentially save each nonlive emu and wait for completion.
+ * @return 0 on success. -errno on failure.
+ */
 static int save_nonlive_one_by_one(void)
 {
     int i;
-    int r;
+    int rc;
 
-    for (i=0; i< num_emus; i++) {
+    for (i = 0; i < num_emus; i++) {
         if (!(emus[i].enabled & STAGE_STOPCOPY))
             continue;
-        emu_info("Save non-live (%d) %s", i, emus[i].name);
 
-        r = xenopsd_send_prepare(&emus[i]);
-        if (r < 0)
-            return r;
+        rc = xenopsd_send_prepare(&emus[i]);
+        if (rc < 0)
+            return rc;
 
-        r = em_socke_send_cmd(emus[i].sock, cmd_migrate_nonlive);
-        if (r < 0) {
-            emu_err("Failed to send msg %d for %s\n",cmd_migrate_nonlive ,emus[i].name);
-            return -1;
-        }
+        rc = em_socke_send_cmd(emus[i].sock, cmd_migrate_nonlive);
+        if (rc < 0)
+            return rc;
 
         while (emus[i].status != all_done) {
-            r = wait_for_event();
-
-            if (r < 0 && errno != EINTR && errno != ETIME) {
-                     emu_err("Got error while waiting for events");
-                     return -1;
+            rc = wait_for_event();
+            if (rc < 0 && rc != -ETIME) {
+                emu_err("Error waiting for events: %d, %s",
+                        -rc, strerror(-rc));
+                return -rc;
             }
+
             update_progress();
         }
 
         if (emus[i].stream)
-             syncfs(emus[i].stream);
+            syncfs(emus[i].stream);
     }
+
     return 0;
 }
 
