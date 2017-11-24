@@ -553,55 +553,42 @@ static int parse_int(const char *str)
     return result;
 }
 
-
-static struct emu *find_emu(char *emu_str, char **remaining)
+/*
+ * Parses the argument for the -dm option, given by @arg.
+ * The argument is of the form: <emu-name>[:<fd>]
+ * @arg may be mutated. Exits with status 1 if an error occurs.
+ */
+static void parse_dm_arg(char *arg)
 {
-   int len;
-   *remaining=NULL;
+    struct emu *emu;
+    char *param;
 
-   for (len=0; (emu_str[len] > ' ' && emu_str[len] != ':'); len++);
-
-   if (emu_str[len] == ':') {
-     *remaining = &emu_str[len+1];
-     emu_str[len]='\0';
-   }
-
-   return find_emu_by_name(emu_str);
-}
-
-static void get_dm_param(char* arg)
-{
-   struct emu *emu;
-   char *param=NULL;
-   char *emu_name;
-
-   emu_name = strdup(arg);
-
-   emu = find_emu(emu_name, &param);
-
-   if (!emu) {
-       if (param)
-           emu_err("Bad DM args, Got '%s'", emu_name);
-       else
-           emu_err("Bad DM args, got '%s' with args '%s'", emu_name, param);
-
-       free(emu_name);
-       exit(1);
-   }
-
-   emu->enabled |= STAGE_ENABLED;
-
-   if (param) {
-       if (emu->proto == emp) {
-           emu->stream = parse_int(param);
-       } else {
-           emu_err("Bad DM args, Got '%s', referring to %s, param '%s'", optarg, emu->name, param);
-           emu->enabled = false;
-       }
+    param = strchr(arg, ':');
+    if (param) {
+        *param = '\0';
+        param++;
     }
-    free(emu_name);
-}
 
+    emu = find_emu_by_name(arg);
+
+    if (!emu) {
+        emu_err("Bad dm arg: '%s', '%s'", arg, param);
+        exit(1);
+    }
+
+    emu->enabled |= STAGE_ENABLED;
+
+    if (param) {
+        switch (emu->proto) {
+            case emp:
+                emu->stream = parse_int(param);
+                break;
+            case qmp:
+                abort();
+                break;
+        }
+    }
+}
 
 static void parse_args(int argc, char *const argv[])
 {
@@ -655,7 +642,7 @@ static void parse_args(int argc, char *const argv[])
              gLive = 1;
         break;
         case emu_arg_dm:
-             get_dm_param(optarg);
+             parse_dm_arg(optarg);
         break;
         case emu_arg_mode:
            gMode = str_lookup(mode_names, optarg);
