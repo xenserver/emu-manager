@@ -100,24 +100,31 @@ static int send_buf_and_fd(int socket, void *buf, int count, int fd_to_send)
         return 0;
 }
 
-int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data)
+/*
+ * Allocate and initialize an emu_socket_t object.
+ * @return 0 on success. -errno on error.
+ */
+int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback,
+                    void *data)
 {
-   assert(!*sock);
+    emu_socket_t *s;
 
-   *sock = malloc(sizeof(emu_socket_t));
-   if (*sock == NULL) {
-       ERR("Failed to alloc socket record");
-       return -ENOMEM;
-   }
-   (*sock)->fd=-1;
-   (*sock)->data=data;
-   (*sock)->callback=callback;
+    assert(!*sock);
 
-   (*sock)->buf_rem=NULL;
-   (*sock)->rem_len=0;
-   (*sock)->more=false;
+    s = malloc(sizeof(emu_socket_t));
+    if (!s) {
+        ERR("Failed to allocate emu_socket_t");
+        return -ENOMEM;
+    }
+    s->fd = -1;
+    s->data = data;
+    s->callback=callback;
+    s->buf_rem = NULL;
+    s->rem_len = 0;
+    s->more = false;
+    *sock = s;
 
-   return 0;
+    return 0;
 }
 
 int em_socket_open(emu_socket_t *sock, char* path)
