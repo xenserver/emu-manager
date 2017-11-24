@@ -1259,72 +1259,47 @@ static int wait_for_event(void)
     return rc;
 }
 
-static int wait_for_finished(void)
+/* Returns true if @emu is live and has not yet finished. False otherwise. */
+static bool check_live_not_finished(const struct emu *emu)
 {
-    int i;
-    int r;
-    int finished=0;
-    while (!finished) {
-        finished=1;
-        for (i=0; i< num_emus; i++) {
-            if ((emus[i].enabled & STAGE_LIVE) && (emus[i].status != all_done)) {
-               emu_info("Waiting for %s to finish", emus[i].name);
-               finished=0;
-               break;
-            }
-         }
-
-         if (!finished) {
-             r = wait_for_event();
-
-             if (r < 0 && errno != EINTR && errno != ETIME) {
-                  emu_err("Got error %s while waiting for events", strerror(errno));
-                  return -1;
-             }
-            if (r==0) {
-                  emu_err("xenopsd hung up");
-                  return -1;
-
-            }
-            update_progress();
-         }
-    }
-    return 0;
+    return (emu->enabled & STAGE_LIVE) && emu->status != all_done;
 }
 
-static int wait_for_ready(void)
+/* Returns true if @emu is live and has not yet started. False otherwise. */
+static bool check_live_not_started(const struct emu *emu)
+{
+    return (emu->enabled & STAGE_LIVE) && emu->status == not_done;
+}
+
+/*
+ * Wait for @check to return false for every emu.
+ * @return 0 on success. -errno on failure.
+ */
+static int wait_on_condition(bool (*check)(const struct emu *emu))
 {
     int i;
-    int r;
-    int waiting=1;
-    int enabled = 0;
-    while (waiting) {
-        enabled = 0;
-        for (i=0; i< num_emus; i++) {
-            if (emus[i].enabled & STAGE_LIVE) {
-                enabled++;
-                emu_info("%s waiting for %d: %s", (emus[i].status> not_done)?"not":"", i, emus[i].name);
-                if (emus[i].status > not_done)
-                    waiting=false;
-            }
-         }
-         if (enabled == 0)
-            waiting = false;
+    int rc;
+    int remaining;
 
-         if (waiting) {
-              r = wait_for_event();
+    for (;;) {
+        remaining = 0;
+        for (i = 0; i < num_emus; i++) {
+            if (check(&emus[i]))
+                remaining++;
+        }
 
-              if (r < 0 && errno != EINTR && errno!= ETIME) {
-                  emu_err("Got error while waiting for events");
-                  return -1;
-              }
-              if (r==0) {
-                  emu_err("xenopsd hung up");
-                  return -1;
-              }
-         }
-         update_progress();
+        if (remaining == 0)
+            break;
+
+        rc = wait_for_event();
+        if (rc < 0 && rc != -ETIME) {
+            emu_err("Error waiting for events: %d, %s",
+                    -rc, strerror(-rc));
+            return -rc;
+        }
+        update_progress();
     }
+
     return 0;
 }
 
@@ -1515,7 +1490,7 @@ static int operation_save(void)
        if (r)
            goto migrate_end;
 
-       r = wait_for_ready();
+       r = wait_on_condition(check_live_not_started);
        if (r)
            goto migrate_end;
    }
@@ -1533,7 +1508,7 @@ static int operation_save(void)
    if (r)
        goto migrate_end;
 
-   wait_for_finished();
+   wait_on_condition(check_live_not_finished);
 
    emu_info("send non-live data");
 
