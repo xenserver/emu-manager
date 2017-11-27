@@ -1091,12 +1091,9 @@ static int migrate_end(void)
       if (emus[i].client) {
 
          fd = emus[i].client->fd;
-         if (fd) {
-            if ( fd && emus[i].startup)
-              em_client_send_cmd(emus[i].client,cmd_quit);
-            em_client_free(emus[i].client);
-         }
-         free(emus[i].client);
+         if (fd >= 0 && emus[i].startup)
+             em_client_send_cmd(emus[i].client, cmd_quit);
+         em_client_free(emus[i].client);
       }
       fd = emus[i].stream;
       if (fd)
