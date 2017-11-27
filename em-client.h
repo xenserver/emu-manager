@@ -23,12 +23,7 @@ typedef struct emu_socket
 } emu_socket_t;
 
 
-struct argument {
-    struct argument *next;
-    char *key;
-    char *value;
-};
-
+struct argument;
 extern struct command_names commands[];
 
 int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no);
@@ -38,9 +33,6 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
 
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data);
 int em_socket_connect(emu_socket_t *sock, const char *path);
-int write_all(int fd, const void *buf, size_t count);
 int em_socket_process(emu_socket_t *sock);
 int em_socket_read(emu_socket_t *sock, int timeout);
 void em_socket_free(emu_socket_t *sock);
-
-ssize_t read_tlimit(int fd, char *buf, size_t len, int time);

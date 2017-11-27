@@ -13,6 +13,7 @@
 #include <termios.h>
 #include <signal.h>
 #include "em-client.h"
+#include "lib.h"
 #include <syslog.h>
 
 #define CONTROL_PATH "/var/xen/%s/%d/control"
@@ -194,40 +195,6 @@ static int str_lookup(const char* table[], char cmp[])
 }
 
 /* Functions for communicating with xenopsd */
-
-/*
- * Read up to @len bytes into @buf from @fd, waiting for up to @time seconds
- * for data to appear. This function will handle spurious errors like EINTR.
- * @return The number of bytes read if it succeeds. 0 if the other end closes
- * the file descriptor. -ETIME if a time occurs. -errno if an error occurs.
- */
-ssize_t read_tlimit(int fd, char *buf, size_t len, int time)
-{
-    struct pollfd pfd = { .fd = fd, .events = POLLIN };
-    int rc;
-    ssize_t ret;
-
-    if (time > 0) {
-        /*
-         * If a signal interrupts us we might wait a bit longer than was
-         * requested. This shouldn't be a problem.
-         */
-        while ((rc = poll(&pfd, 1 , time * 1000)) == -1 &&
-               (errno == EINTR || errno == EAGAIN))
-            ;
-        if (rc < 0)
-            return -errno;
-        if (rc == 0)
-            return -ETIME;
-    }
-
-    while ((ret = read(fd, buf, len)) == -1 &&
-           (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
-        ;
-    if (ret < 0)
-        return -errno;
-    return ret;
-}
 
 /*
  * Read from xenopsd into an internal buffer. @timeout specifies the timeout
@@ -477,39 +444,6 @@ static int xenopsd_send_error_result(int err)
 /* Functions for program startup. */
 
 /*
- * Append the given @key and @value pair to @emu's list of extra arguments.
- * @return 0 on success. -errno on failure.
- */
-static int add_extra_arg(struct emu *emu, const char *key, const char *value)
-{
-    struct argument *xa;
-    struct argument **lp;
-
-    xa = malloc(sizeof(*xa));
-    if (!xa)
-        return -errno;
-
-    xa->key = strdup(key);
-    xa->value = strdup(value);
-    xa->next = NULL;
-
-    if (!xa->key || !xa->value) {
-        free(xa->key);
-        free(xa->value);
-        free(xa);
-        return -errno;
-    }
-
-    lp = &emu->extra;
-    while (*lp) {
-        lp = &(*lp)->next;
-    }
-    *lp = xa;
-
-    return 0;
-}
-
-/*
  * Parses an integer from a string given by @str. Except for whitespace at the
  * start, the string may not have leading or trailing characters that do not
  * form part of the number. Exits with status 1 if an error occurs.
@@ -666,7 +600,7 @@ static void parse_args(int argc, char *argv[])
             case arg_xg_console_port:
                 emu_info("adding xenguest special option %s = %s",
                          args[arg_index].name, optarg);
-                rc = add_extra_arg(&emus[0], args[arg_index].name, optarg);
+                rc = argument_add(&emus[0].extra, args[arg_index].name, optarg);
                 if (rc) {
                     emu_err("Error adding xenguest argument: %d, %s",
                             -rc, strerror(-rc));
@@ -1558,7 +1492,7 @@ int main(int argc, char *argv[])
 
    switch (gMode) {
    case op_pvsave:
-       rc = add_extra_arg(&emus[0], "pv", "true");
+       rc = argument_add(&emus[0].extra, "pv", "true");
        if (rc) {
            emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
            return 1;
@@ -1568,7 +1502,7 @@ int main(int argc, char *argv[])
       setvbuf(stdout, NULL, _IONBF, 0);
       return operation_save();
    case op_pvrestore:
-      rc = add_extra_arg(&emus[0], "pv", "true");
+      rc = argument_add(&emus[0].extra, "pv", "true");
       if (rc) {
           emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
           return 1;

@@ -1,7 +1,8 @@
 TARGET = emu-manager
 
 OBJS :=	emum.o \
-	em-client.o 
+	em-client.o \
+	lib.o
 
 CFLAGS  = -I$(shell pwd)
 

@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <string.h>
 #include "em-client.h"
+#include "lib.h"
 #include <errno.h>
 #include <syslog.h>
 #include <stdbool.h>
@@ -23,82 +24,6 @@
 #else
 #define DEBUG(args...)
 #endif
-
-#define UNIX_PATH_MAX 128
-
-/*
- * Write @count bytes of @buf to @fd, handling interruptions from signals,
- * short writes, etc.
- * @return 0 on success. -errno on error.
- */
-int write_all(int fd, const void *buf, size_t count)
-{
-    ssize_t rc;
-
-    do {
-        rc = write(fd, buf, count);
-
-        if (rc < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK ||
-                    errno == EINTR)
-                continue;
-
-            return -errno;
-        }
-
-        count -= rc;
-        buf += rc;
-    } while (count > 0);
-
-    return 0;
-}
-
-/*
- * Write @count bytes of @buf to @socket as well as an open file descriptor
- * given by @fd_to_send. This function will handle spurious interruptions and
- * short writes.
- * @return 0 on success. -errno on error.
- */
-static int send_buf_and_fd(int socket, void *buf, int count, int fd_to_send)
-{
-    struct msghdr msg = {NULL,};
-    struct iovec iov;
-    struct cmsghdr *cmsg;
-    /*
-     * Storage space needed for an ancillary element with a paylod of length
-     * is CMSG_SPACE(sizeof(length)).
-     */
-    char control[CMSG_SPACE(sizeof(int))];
-    ssize_t rc;
-
-    iov.iov_base = buf;
-    iov.iov_len = count;
-
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-
-    memset(control, 0, CMSG_SPACE(sizeof(int)));
-    msg.msg_control = control;
-    msg.msg_controllen = CMSG_SPACE(sizeof(int));
-
-    cmsg = CMSG_FIRSTHDR(&msg);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    *((int *)CMSG_DATA(cmsg)) = fd_to_send;
-
-    do {
-        rc = sendmsg(socket, &msg, 0);
-    } while (rc < 0 &&
-             (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR));
-
-    if (rc < 0)
-        return -errno;
-    else if (rc < count)
-        return write_all(socket, buf + rc, count - rc);
-    else
-        return 0;
-}
 
 /*
  * Allocate and initialize an emu_socket_t object.
@@ -295,23 +220,6 @@ int em_socket_process(emu_socket_t *sock)
     return (rc < 0) ? rc : 0;
 }
 
-static int size_args_list(struct argument *alist, int *char_count)
-{
-  struct argument *al = alist;
-
-  int count = 0;
-  int chars = 0;
-
-  while (al) {
-     count++;
-     chars += strlen(al->key) + strlen(al->value);
-     al = al->next;
-  }
-  *char_count = chars;
-  return count;
-}
-
-
 int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int fd, struct argument *args)
 {
    const int buffersize = 128;
@@ -339,7 +247,7 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
        int buf_size;
        struct argument *al = args;
        
-       r = size_args_list(args, &buf_size);
+       r = argument_list_size(args, &buf_size);
        buf_size += strlen("\"\":\"\", ") * r + strlen("} }"); /* note: \0 takes spair ',' space */
 
        buf_size += snprintf(buffer, buffersize, "{ \"execute\" : \"%s\", \"arguments\" : { ", commands[cmd].name);
