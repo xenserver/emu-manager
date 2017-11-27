@@ -116,15 +116,29 @@ int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback,
         ERR("Failed to allocate emu_socket_t");
         return -ENOMEM;
     }
+    s->tok = json_tokener_new();
+    if (!s->tok) {
+        ERR("Failed to allocate JSON tokener");
+        free(s);
+        return -ENOMEM;
+    }
     s->fd = -1;
     s->data = data;
-    s->callback=callback;
-    s->buf_rem = NULL;
-    s->rem_len = 0;
-    s->more = false;
+    s->callback = callback;
+    s->nbytes = 0;
+    s->needs_return = false;
     *sock = s;
 
     return 0;
+}
+
+/* Close and free an emu_socket_t object given by @sock. */
+void em_socket_free(emu_socket_t *sock)
+{
+    if (sock->fd >= 0)
+        close(sock->fd);
+    json_tokener_free(sock->tok);
+    free(sock);
 }
 
 /*
@@ -166,169 +180,120 @@ int em_socket_connect(emu_socket_t *sock, const char *path)
     return 0;
 }
 
-static int print_jerror(json_object *jobj)
+/*
+ * Read from the emu socket, @sock, into an internal buffer. @timeout specifies
+ * the timeout for the read in seconds.
+ * @return -ETIME if a timeout occurs. -ENOSPC if there is no space remaining
+ * in the buffer. -errno if any other error occurs. 0 if the emu closes the
+ * connection. Otherwise returns the number of bytes read.
+ */
+int em_socket_read(emu_socket_t *sock, int timeout)
 {
-   int r;
-   r = json_object_get_type(jobj);
-   if (r == json_type_string) {
-      const char* err;
-      err = json_object_get_string(jobj);
-      ERR("Recived error '%s'", err);
-   } else if (r == json_type_object) {
-      ERR("Recived error object");
-   } else {
-      ERR("Recived weird error, type %d", r);
-   }
-   return 0;
+    ssize_t ret;
+
+    assert(sock->nbytes <= EM_SOCKET_BUF_SIZE);
+
+    if (sock->nbytes == EM_SOCKET_BUF_SIZE)
+        return -ENOSPC;
+
+    ret = read_tlimit(sock->fd, sock->buf + sock->nbytes,
+                      EM_SOCKET_BUF_SIZE - sock->nbytes, timeout);
+    if (ret > 0)
+        sock->nbytes += ret;
+
+    return ret;
 }
 
+/*
+ * Process JSON object @jobj from emu socket @sock.
+ * @return 0 on success. -errno on error.
+ */
+static int process_object(emu_socket_t *sock, json_object *jobj)
+{
+    json_type type;
+    int rc = 0;
 
-int em_socket_read(emu_socket_t* sock, int canread) {
+    assert(jobj);
 
-   int r;
-   int len;
-   int ret=-1;
-   int offset=0;
-   int need_read=1;
+    type = json_object_get_type(jobj);
+    if (type != json_type_object) {
+        ERR("Expected JSON object, but got %d", type);
+        rc = -EINVAL;
+        goto out;
+    }
 
-   const int buffersize = 128;
+    json_object_object_foreach(jobj, key, val) {
+        if (!strcmp(key, "return")) {
+            sock->needs_return = false;
+        } else if (!strcmp(key, "error")) {
+            if (json_object_is_type(val, json_type_string))
+                ERR("Error from emu: %s", json_object_get_string(jobj));
+            else
+                ERR("Unknown error from emu: %s",
+                    json_object_to_json_string(jobj));
+            rc = -EINVAL;
+            break;
+        } else if (!strcmp(key, "event") &&
+                   json_object_get_type(val) == json_type_string) {
+            if (sock->callback)
+                sock->callback(jobj, sock);
+        } else if (!strcmp(key, "data")) {
+            /* Ignore */
+        } else {
+            ERR("Unexpected key %s\n", key);
+            rc = -EINVAL;
+            break;
+        }
+    }
 
-   char *buffer=NULL;
-   struct json_tokener* tok = NULL;
-   json_object *jobj = NULL;
-
-   enum json_tokener_error jerr;
-
-   em_socket_callback callback;
-   int socket_fd = sock->fd;
-
-   tok = json_tokener_new();
-   if (tok == NULL) {
-       ERR("In need of a tok (%d)\n", sock->fd);
-       return -1;
-   }
-
-   buffer =  sock->buf_rem;
-   len = sock->rem_len;
-
-   if (len > 0) {
-       offset = sock->rem_offset;
-       DEBUG("Processing previouse buffer @ %d of %d bytes (%d)", offset, len, sock->fd);
-
-       jobj = json_tokener_parse_ex(tok, &(buffer[offset]), len);
-       jerr = json_tokener_get_error(tok);
-
-       if (jerr == json_tokener_success ) {
-           DEBUG("Tok had enough");
-           need_read=0;
-       } else if (jerr != json_tokener_continue) {
-           ERR("Got an error %d (%d)", jerr, sock->fd);
-           goto early_error;
-       }
-   } else if (buffer == NULL) {
-       DEBUG("alloc buf");
-       buffer=malloc(buffersize+1);
-       if (buffer==NULL)
-       {
-            ERR("Malloc failed\n");
-            goto early_error;
-       }
-       sock->buf_rem = buffer;
-   }
-
-   if (need_read && !canread) {
-       ret = 0;
-       sock->more = false;
-       goto early_error;
-   }
-
-   if (need_read)
-       offset = 0;
-
-   while (need_read) {
-
-       DEBUG("Reading %s (%d)", (len>0) ? "more" : "", sock->fd);
-
-       len = read(socket_fd, buffer, buffersize);
-       if (len <= 0) {
-           if (len==0)
-               errno=ENODATA;
-           ERRN("Read reply");
-           goto early_error;
-       }
-
-       jobj = json_tokener_parse_ex(tok, buffer, len);
-       jerr = json_tokener_get_error(tok);
-
-       buffer[len] = 0;
-       DEBUG("Just read '%s' %s", buffer, (jerr == json_tokener_success)?"ok":"");
-
-       if (jerr != json_tokener_continue) 
-           need_read = 0;
-   }
-
-   if (jerr != json_tokener_success) {
-       ERR("Tok failed with %d", jerr);
-       goto error;
-   }
-
-   if (jobj==NULL) {
-       ERR("NULL json tree!\n");
-       goto early_error;
-   }
-   r = json_object_get_type(jobj);
-   if (r != json_type_object) {
-       ERR("Expected json object, but got %d", r);
-       goto error;
-   }
-
-   if (len != tok->char_offset) {
-       sock->rem_offset = tok->char_offset + offset;
-       sock->rem_len = len - tok->char_offset;
-       sock->more = true;
-   } else {
-       sock->rem_len = 0;
-       sock->more = false;
-   }
-
-   json_object_object_foreach(jobj, key, val) {
-      if (strcmp(key, "return") == 0) {
-         DEBUG("Got return\n");
-         if (ret>-2)
-            ret = 1;
-      } else if (strcmp(key, "error") == 0) {
-         ret = -2;
-         print_jerror(val);
-      } else if (strcmp(key, "event") == 0
-                  && json_object_get_type(val) == json_type_string) {
-         if (ret==-1)
-             ret = 0;
-         callback = sock->callback;
-         if (callback) {
-                DEBUG("processing event\n" );
-                callback(jobj, sock);
-         } else {
-                DEBUG("not processing event - no callback\n" );
-         }
-      } else if (strcmp(key, "data") == 0) {
-//                INFO("has data");
-      } else {
-         ERR("Unexpected key %s\n", key);
-      }
-   }
-   if (ret == -1)
-     ERR("Didnt get anything expected");
-   DEBUG("response processed (%d)", sock->fd);
-error:
-   json_object_put(jobj);
-early_error:
-   json_tokener_free(tok);
-
-   /* -2 = recived error, -1 = our error, 0 = is good, may have processed somithng, 1 = returning somithng. */
-
-   return ret;
+out:
+    json_object_put(jobj);
+    return rc;
 }
 
+/*
+ * Process any messages in the internal buffer of emu socket @sock.
+ * @return The number of messages processed on success. -errno on failure.
+ */
+int em_socket_process(emu_socket_t *sock)
+{
+    const char *ptr;
+    json_object *jobj;
+    enum json_tokener_error jerr;
+    int processed = 0;
+    int rc = 0;
+
+    INFO("Process emu_socket_t read buffer: '%.*s'",
+         sock->nbytes, sock->buf);
+
+    ptr = sock->buf;
+    while (sock->nbytes) {
+        json_tokener_reset(sock->tok);
+        jobj = json_tokener_parse_ex(sock->tok, ptr, sock->nbytes);
+        jerr = json_tokener_get_error(sock->tok);
+
+        if (jerr == json_tokener_continue) {
+            if (sock->nbytes == EM_SOCKET_BUF_SIZE)
+                return -EMSGSIZE;
+            break;
+        } else if (jerr != json_tokener_success) {
+            ERR("Error from tokener: %s", json_tokener_error_desc(jerr));
+            rc = -EINVAL;
+            break;
+        }
+
+        rc = process_object(sock, jobj);
+        sock->nbytes -= sock->tok->char_offset;
+        ptr += sock->tok->char_offset;
+        if (rc < 0)
+            break;
+        processed++;
+    }
+
+    memmove(sock->buf, ptr, sock->nbytes);
+
+    return (rc < 0) ? rc : 0;
+}
 
 static int size_args_list(struct argument *alist, int *char_count)
 {
@@ -415,16 +380,25 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
       return -1;
    }
 
-   do {
-       r = em_socket_read(sock, 1);
-   } while ( r == 0);
+    sock->needs_return = true;
 
-   if (r==1)
-       return 0;
-   else {
-       ERR("Failed to read after command");
-       return -1;
-   }
+    do {
+       r = em_socket_read(sock, EM_READ_TIMEOUT);
+        if (r == 0) {
+            ERR("Unexpected EOF on emu socket\n");
+            return -EPIPE;
+        } else if (r < 0) {
+            ERR("emu read error: %d, %s\n", -r, strerror(-r));
+            return r;
+        }
+
+        r = em_socket_process(sock);
+    } while (r >= 0 && sock->needs_return);
+
+   if (args)
+      free(out_buffer);
+
+    return (r < 0) ? r : 0;
 
 error_free:
    if (args)

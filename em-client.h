@@ -1,9 +1,13 @@
 #include "emp.h"
 #include <json/json.h>
+#include <stdbool.h>
 
 typedef struct emu_socket emu_socket_t;
 
 typedef int (*em_socket_callback)(json_object *, emu_socket_t*);
+
+#define EM_SOCKET_BUF_SIZE 1024
+#define EM_READ_TIMEOUT 30
 
 typedef struct emu_socket
 {
@@ -12,10 +16,10 @@ typedef struct emu_socket
    void *data;
 /* -- */
 
-   char* buf_rem;
-   int rem_offset;
-   int rem_len;
-   int more;
+   char buf[EM_SOCKET_BUF_SIZE];
+   int nbytes;
+   bool needs_return;
+   json_tokener *tok;
 } emu_socket_t;
 
 
@@ -34,5 +38,9 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
 
 int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback, void* data);
 int em_socket_connect(emu_socket_t *sock, const char *path);
-int em_socket_read(emu_socket_t* sock, int canread);
 int write_all(int fd, const void *buf, size_t count);
+int em_socket_process(emu_socket_t *sock);
+int em_socket_read(emu_socket_t *sock, int timeout);
+void em_socket_free(emu_socket_t *sock);
+
+ssize_t read_tlimit(int fd, char *buf, size_t len, int time);

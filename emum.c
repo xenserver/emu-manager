@@ -201,7 +201,7 @@ static int str_lookup(const char* table[], char cmp[])
  * @return The number of bytes read if it succeeds. 0 if the other end closes
  * the file descriptor. -ETIME if a time occurs. -errno if an error occurs.
  */
-static ssize_t read_tlimit(int fd, char *buf, size_t len, int time)
+ssize_t read_tlimit(int fd, char *buf, size_t len, int time)
 {
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     int rc;
@@ -1162,7 +1162,7 @@ static int migrate_end(void)
          if (fd) {
             if ( fd && emus[i].startup)
               em_socke_send_cmd(emus[i].sock,cmd_quit);
-            close(fd);
+            em_socket_free(emus[i].sock);
          }
          free(emus[i].sock);
       }
@@ -1181,34 +1181,11 @@ static int wait_for_event(void)
 {
     int i;
     int rc, r;
-    int was_more = false;
     fd_set rfds;
     fd_set wfds;
     fd_set xfds;
     int max_fd = xenopsd_in;
     struct timeval tv = {30, 0};  /* 30 second timeout */
-
-    /* Check for existing data */
-    for (i = 0; i < num_emus; i++) {
-        if (!emus[i].enabled)
-            continue;
-
-        if (emus[i].sock->more) {
-            was_more = true;
-
-            r = em_socket_read(emus[i].sock, false);
-            if (r < 0) {
-                emu_err("Failed to read from %s\n", emus[i].name);
-                return -1;
-            }
-            if (r > 0) {
-                emu_err("Unexpected return from %s\n", emus[i].name);
-                return -1;
-            }
-        }
-    }
-    if (was_more)
-        return 1;
 
     FD_ZERO(&rfds);
     FD_ZERO(&wfds);
@@ -1237,26 +1214,29 @@ static int wait_for_event(void)
                 emu_err("Unexpected EOF on xenopsd control fd\n");
                 return -EPIPE;
             } else if (r < 0) {
-                emu_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
+                emu_err("xenospd read error: %d, %s\n", -r, strerror(-r));
                 return r;
             }
             r = xenopsd_process();
-            emu_info("control message rc = %d", rc);
+            emu_info("control message rc = %d", r);
             if (r < 0 )
                 return r;
         }
 
-        for (i=0; i< num_emus; i++) {
+        for (i = 0; i < num_emus; i++) {
             if (emus[i].enabled && FD_ISSET(emus[i].sock->fd, &rfds)) {
-                r = em_socket_read(emus[i].sock, true);
-                if (r < 0) {
-                    emu_err("Failed to read from %s\n",emus[i].name);
-                    return -1;
+                r = em_socket_read(emus[i].sock, 0);
+                if (r == 0) {
+                    emu_err("Unexpected EOF on emu socket\n");
+                    return -EPIPE;
+                } else if (r < 0) {
+                    emu_err("emu read error: %d, %s\n", -r, strerror(-r));
+                    return r;
                 }
-                if (r > 0) {
-                    emu_err("Unexpected return from %s\n",emus[i].name);
-                    return -1;
-                }
+                r = em_socket_process(emus[i].sock);
+                emu_info("emu socket message rc = %d", r);
+                if (r < 0 )
+                    return r;
             }
         }
 
