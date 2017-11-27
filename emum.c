@@ -85,14 +85,6 @@ enum state {
     result_sent
 };
 
-
-struct data_stats {
-   uint64_t part_sent;
-   uint64_t sent;
-   uint64_t remaining;
-   int iter;
-};
-
 struct emu {
     char *name;
     char **startup;
@@ -112,7 +104,11 @@ struct emu {
     char* result;
     int error;
     struct argument *extra;
-    struct data_stats* data_stats;
+
+    uint64_t part_sent;
+    uint64_t sent;
+    uint64_t remaining;
+    int iter;
 };
 
 char *xenguest_args[] = {
@@ -127,45 +123,20 @@ char *xenguest_args[] = {
 
 #define num_emus 3
 struct emu emus[num_emus] = {
-/*   name,       startup,       waitfor,   waitfor_size, proto, enabled,                     live_check, exp_total, client, stream, status,   result, error, extra, data_stats */
-    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_ENABLED), true,       1000000,   NULL,   0,      not_done, NULL,   0,     NULL,  NULL},
-    {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,                   false ,     100000,    NULL,   0,      not_done, NULL,   0,     NULL,  NULL},
-    {"qemu",     NULL,          NULL,      0,            qmp,   FULL_NONLIVE,                false,      10,        NULL,   0,      not_done, NULL,   0,     NULL,  NULL}
+/*   name,       startup,       waitfor,   waitfor_size, proto, enabled,*/
+    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_ENABLED),
+/*   live_check, exp_total, client, stream, status,   result, error, extra, part_sent, sent, remaining, iter */
+     true,       1000000,   NULL,   0,      not_done, NULL,   0,     NULL,  0,         0,    0,         -1},
+    {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,
+     false ,     100000,    NULL,   0,      not_done, NULL,   0,     NULL,  0,         0,    0,         -1},
+    {"qemu",     NULL,          NULL,      0,            qmp,   FULL_NONLIVE,
+     false,      10,        NULL,   0,      not_done, NULL,   0,     NULL,  0,         0,    0,         -1}
 };
 
 #define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
 #define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
 
 static int restore_emu(struct emu *emu);
-
-static int calculate_done(void)
-{
-    int i;
-
-    uint64_t total_expect = 0;
-    uint64_t total_sent  = 0;
-    uint64_t perc;
-
-    for (i=0; i< num_emus; i++) {
-       if (emus[i].enabled) {
-           if (emus[i].data_stats) {
-               total_sent += emus[i].data_stats->sent;
-
-               /* Add 80% of partial update, to compinsate for lack cosideration of dirtying of pages */
-               total_sent += ((emus[i].data_stats->part_sent - emus[i].data_stats->sent) * 80) / 100;
-
-               total_expect += emus[i].data_stats->sent + emus[i].data_stats->remaining;
-           } else {
-              total_expect += emus[i].exp_total;
-              if (emus[i].status >= all_done)
-                  total_sent += emus[i].exp_total;
-           }
-       }
-   }
-
-   perc = (total_expect)?(total_sent * 100) / total_expect:0;
-   return (uint) perc;
-}
 
 /*
  * Return the emu whose name is @name.
@@ -322,18 +293,6 @@ static int xenopsd_send_progress(int progress)
         return -errno;
 
     return xenopsd_send_message(buf);
-}
-
-static int update_progress(void)
-{
-
-   int progress = calculate_done();
-
-   if (gLastUpdateP != progress) {
-       xenopsd_send_progress(progress);
-       gLastUpdateP = progress;
-   }
-   return progress;
 }
 
 /*
@@ -721,43 +680,84 @@ out:
     return ret;
 }
 
-static int process_status_stats(struct emu* emu, int iter, int sent, int rem)
+/*
+ * Calculates the progress.
+ * @return The current progress between 0 and 100 inclusive.
+ */
+static int calculate_done(void)
 {
-   int ready = (emu->status == live_done);
-   int progress;
+    int i;
+    uint64_t expect = 0;
+    uint64_t sent  = 0;
 
-   /* fudge - remaining can be a wrong. */
-   if ((iter==0) && (rem == 0))
-         rem = -1;
+    for (i = 0; i < num_emus; i++) {
+        if (!emus[i].enabled)
+            continue;
 
-   if (emu->data_stats == NULL) {
-      emu->data_stats = malloc(sizeof( struct data_stats));
-      if (emu->data_stats == NULL) {
-           emu_err("Failed to alloc data_stats for %s", emu->name);
-      } else {
-           emu->data_stats->remaining = -1;
-      }
-   }
-   if (emu->data_stats != NULL) {
+        if (emus[i].iter >= 0) {
+            sent += emus[i].sent;
 
-          if (rem != -1) {
-              emu->data_stats->remaining = rem;
-              emu->data_stats->sent = sent;
-              emu->data_stats->iter = iter;
-              emu->data_stats->part_sent = sent;
-          } else {
-              emu->data_stats->part_sent = sent;
-          }
-   }
-   progress =  update_progress();
+            /*
+             * Add only 80% of a partial update to compensate for dirty pages
+             * that will need to be copied again later.
+             */
+            sent += (emus[i].part_sent - emus[i].sent) * 80 / 100;
 
-   emu_info("for %s:rem %d, iter %d, send %d %s.  Tot=%d",emu->name, rem, iter, sent, (ready)?" Waiting":"", progress);
-   if ((iter>0) && (rem < 50 || iter >= 4) && !ready) {
-       emu_info("criteria met - signal ready");
-       emu->status= live_done;
-   }
+            expect += emus[i].sent + emus[i].remaining;
+        } else {
+            expect += emus[i].exp_total;
+            if (emus[i].status >= all_done)
+                sent += emus[i].exp_total;
+        }
+    }
 
-   return 0;
+    return expect ? sent * 100 / expect : 0;
+}
+
+/*
+ * Calculates the progress and sends it to xenopsd.
+ * @return The current progress between 0 and 100 inclusive. -errno on failure.
+ */
+static int update_progress(void)
+{
+    int rc = 0;
+    int progress = calculate_done();
+
+    if (gLastUpdateP != progress) {
+        rc = xenopsd_send_progress(progress);
+        gLastUpdateP = progress;
+    }
+    return rc ? rc : progress;
+}
+
+static int process_status_stats(struct emu *emu, int iter, int sent, int rem)
+{
+    int progress;
+    int ready = emu->status == live_done;
+
+    /* remaining can be wrong - fix it up if it is. */
+    if (iter == 0 && rem == 0)
+        rem = -1;
+
+    if (rem != -1) {
+        emu->remaining = rem;
+        emu->sent = sent;
+        emu->iter = iter;
+    }
+    emu->part_sent = sent;
+
+    progress = update_progress();
+    if (progress < 0)
+        return progress;
+
+    emu_info("for %s:rem %d, iter %d, send %d %s.  Tot=%d",
+             emu->name, rem, iter, sent, ready ? " Waiting" : "", progress);
+    if ((iter > 0) && (rem < 50 || iter >= 4) && !ready) {
+        emu_info("criteria met - signal ready");
+        emu->status = live_done;
+    }
+
+    return 0;
 }
 
 /* where events are parsed */
