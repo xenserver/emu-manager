@@ -105,7 +105,7 @@ struct emu {
 
     int exp_total;
 
-    emu_socket_t* sock;
+    em_client_t* client;
     int stream;
 
     enum state status;
@@ -127,10 +127,10 @@ char *xenguest_args[] = {
 
 #define num_emus 3
 struct emu emus[num_emus] = {
-/*   name,       startup,       waitfor,   waitfor_size, proto, enabled,                     live_check, exp_total, sock, stream, status,   result, error, extra, data_stats */
-    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_ENABLED), true,       1000000,   NULL, 0,      not_done, NULL,   0,     NULL,  NULL},
-    {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,                   false ,     100000,    NULL, 0,      not_done, NULL,   0,     NULL,  NULL},
-    {"qemu",     NULL,          NULL,      0,            qmp,   FULL_NONLIVE,                false,      10,        NULL, 0,      not_done, NULL,   0,     NULL,  NULL}
+/*   name,       startup,       waitfor,   waitfor_size, proto, enabled,                     live_check, exp_total, client, stream, status,   result, error, extra, data_stats */
+    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_ENABLED), true,       1000000,   NULL,   0,      not_done, NULL,   0,     NULL,  NULL},
+    {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,                   false ,     100000,    NULL,   0,      not_done, NULL,   0,     NULL,  NULL},
+    {"qemu",     NULL,          NULL,      0,            qmp,   FULL_NONLIVE,                false,      10,        NULL,   0,      not_done, NULL,   0,     NULL,  NULL}
 };
 
 #define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
@@ -763,9 +763,9 @@ static int process_status_stats(struct emu* emu, int iter, int sent, int rem)
 }
 
 /* where events are parsed */
-static int emu_callback(json_object *jobj, emu_socket_t* sock)
+static int emu_callback(json_object *jobj, em_client_t* cli)
 {
-   struct emu* emu = (struct emu*) sock->data;
+   struct emu* emu = (struct emu*) cli->data;
    int r;
 
    json_object *event=NULL;
@@ -898,11 +898,11 @@ static int connect_emu(struct emu *emu)
     if (rc < 0)
         return -errno;
 
-    rc = em_socket_alloc(&emu->sock, emu_callback, emu);
+    rc = em_client_alloc(&emu->client, emu_callback, emu);
     if (rc)
         return rc;
 
-    return em_socket_connect(emu->sock, path);
+    return em_client_connect(emu->client, path);
 }
 
 /*
@@ -923,7 +923,7 @@ static int connect_emus(void)
         switch (emu->proto) {
             case emp:
                 if ((rc = connect_emu(emu))) {
-                    emu_err("Failed to open socket for %s: %d, %s",
+                    emu_err("Failed to connect to %s: %d, %s",
                             emu->name, -rc, strerror(-rc));
                     return rc;
                 }
@@ -953,14 +953,14 @@ static int init_emus(void)
 
         switch (emu->proto) {
             case emp:
-                rc = em_socke_send_cmd_fd(emu->sock, cmd_migrate_init,
-                                          emu->stream);
+                rc = em_client_send_cmd_fd(emu->client, cmd_migrate_init,
+                                           emu->stream);
                 if (rc)
                     return rc;
 
                 if (emu->extra) {
-                    rc = em_socke_send_cmd_args(emu->sock, cmd_set_args,
-                                                emu->extra);
+                    rc = em_client_send_cmd_args(emu->client, cmd_set_args,
+                                                 emu->extra);
                     if (rc)
                         return rc;
                 }
@@ -991,11 +991,11 @@ static int request_track_emus(void)
 
         switch (emu->proto) {
             case emp:
-                rc = em_socke_send_cmd(emu->sock, cmd_track_dirty);
+                rc = em_client_send_cmd(emu->client, cmd_track_dirty);
                 if (rc)
                     return rc;
 
-                rc = em_socke_send_cmd(emu->sock, cmd_migrate_progress);
+                rc = em_client_send_cmd(emu->client, cmd_migrate_progress);
                 if (rc)
                     return rc;
 
@@ -1023,7 +1023,7 @@ static int restore_emu(struct emu *emu)
 
     emu_info("restore %s", emu->name);
 
-    rc = em_socke_send_cmd(emu->sock, cmd_restore);
+    rc = em_client_send_cmd(emu->client, cmd_restore);
     if (rc < 0) {
         emu_err("Failed to start restore for %s\n", emu->name);
         return rc;
@@ -1055,7 +1055,7 @@ static int migrate_live_emus(void)
         }
 
         emu_info("Migrate live %d: %s", i, emus[i].name);
-        rc = em_socke_send_cmd(emus[i].sock, cmd_migrate_live);
+        rc = em_client_send_cmd(emus[i].client, cmd_migrate_live);
         if (rc)
             return rc;
     }
@@ -1076,7 +1076,7 @@ static int pause_emus(void)
         if (!(emus[i].enabled & STAGE_PAUSED))
             continue;
 
-        rc = em_socke_send_cmd(emus[i].sock, cmd_migrate_paused);
+        rc = em_client_send_cmd(emus[i].client, cmd_migrate_paused);
         if (rc)
             return rc;
     }
@@ -1090,15 +1090,15 @@ static int migrate_end(void)
    int i;
 
    for (i=0; i< num_emus; i++) {
-      if (emus[i].sock) {
+      if (emus[i].client) {
 
-         fd = emus[i].sock->fd;
+         fd = emus[i].client->fd;
          if (fd) {
             if ( fd && emus[i].startup)
-              em_socke_send_cmd(emus[i].sock,cmd_quit);
-            em_socket_free(emus[i].sock);
+              em_client_send_cmd(emus[i].client,cmd_quit);
+            em_client_free(emus[i].client);
          }
-         free(emus[i].sock);
+         free(emus[i].client);
       }
       fd = emus[i].stream;
       if (fd)
@@ -1133,7 +1133,7 @@ static int wait_for_event(void)
         if (!emus[i].enabled)
             continue;
 
-        fd = emus[i].sock->fd;
+        fd = emus[i].client->fd;
         FD_SET(fd, &rfds);
         if (fd > max_fd)
             max_fd = fd;
@@ -1158,8 +1158,8 @@ static int wait_for_event(void)
         }
 
         for (i = 0; i < num_emus; i++) {
-            if (emus[i].enabled && FD_ISSET(emus[i].sock->fd, &rfds)) {
-                r = em_socket_read(emus[i].sock, 0);
+            if (emus[i].enabled && FD_ISSET(emus[i].client->fd, &rfds)) {
+                r = em_client_read(emus[i].client, 0);
                 if (r == 0) {
                     emu_err("Unexpected EOF on emu socket\n");
                     return -EPIPE;
@@ -1167,8 +1167,8 @@ static int wait_for_event(void)
                     emu_err("emu read error: %d, %s\n", -r, strerror(-r));
                     return r;
                 }
-                r = em_socket_process(emus[i].sock);
-                emu_info("emu socket message rc = %d", r);
+                r = em_client_process(emus[i].client);
+                emu_info("em client message rc = %d", r);
                 if (r < 0 )
                     return r;
             }
@@ -1243,7 +1243,7 @@ static int save_nonlive_one_by_one(void)
         if (rc < 0)
             return rc;
 
-        rc = em_socke_send_cmd(emus[i].sock, cmd_migrate_nonlive);
+        rc = em_client_send_cmd(emus[i].client, cmd_migrate_nonlive);
         if (rc < 0)
             return rc;
 
@@ -1359,7 +1359,7 @@ static int migrate_abort(void)
         if (emus[i].enabled) {
             switch (emus[i].proto) {
             case emp:
-                r = em_socke_send_cmd(emus[i].sock, cmd_migrate_abort);
+                r = em_client_send_cmd(emus[i].client, cmd_migrate_abort);
                 if (r)
                     return r;
             break;

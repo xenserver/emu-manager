@@ -26,56 +26,56 @@
 #endif
 
 /*
- * Allocate and initialize an emu_socket_t object.
+ * Allocate and initialize an em_client_t object.
  * @return 0 on success. -errno on error.
  */
-int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback,
+int em_client_alloc(em_client_t **cli, em_client_callback callback,
                     void *data)
 {
-    emu_socket_t *s;
+    em_client_t *c;
 
-    assert(!*sock);
+    assert(!*cli);
 
-    s = malloc(sizeof(emu_socket_t));
-    if (!s) {
-        ERR("Failed to allocate emu_socket_t");
+    c = malloc(sizeof(em_client_t));
+    if (!c) {
+        ERR("Failed to allocate em_client_t");
         return -ENOMEM;
     }
-    s->tok = json_tokener_new();
-    if (!s->tok) {
+    c->tok = json_tokener_new();
+    if (!c->tok) {
         ERR("Failed to allocate JSON tokener");
-        free(s);
+        free(c);
         return -ENOMEM;
     }
-    s->fd = -1;
-    s->data = data;
-    s->callback = callback;
-    s->nbytes = 0;
-    s->needs_return = false;
-    *sock = s;
+    c->fd = -1;
+    c->data = data;
+    c->callback = callback;
+    c->nbytes = 0;
+    c->needs_return = false;
+    *cli = c;
 
     return 0;
 }
 
-/* Close and free an emu_socket_t object given by @sock. */
-void em_socket_free(emu_socket_t *sock)
+/* Close and free an em_client_t object given by @sock. */
+void em_client_free(em_client_t *cli)
 {
-    if (sock->fd >= 0)
-        close(sock->fd);
-    json_tokener_free(sock->tok);
-    free(sock);
+    if (cli->fd >= 0)
+        close(cli->fd);
+    json_tokener_free(cli->tok);
+    free(cli);
 }
 
 /*
- * Connect the emu_socket_t given by @sock to @path.
+ * Connect the em_client_t given by @sock to @path.
  * @return 0 on success. -errno on error.
  */
-int em_socket_connect(emu_socket_t *sock, const char *path)
+int em_client_connect(em_client_t *cli, const char *path)
 {
     struct sockaddr_un addr;
     int fd;
 
-    assert(sock);
+    assert(cli);
 
     if (strlen(path) >= sizeof(addr.sun_path))
         return ENAMETOOLONG;
@@ -100,40 +100,40 @@ int em_socket_connect(emu_socket_t *sock, const char *path)
         close(fd);
         return -saved_errno;
     }
-    sock->fd = fd;
+    cli->fd = fd;
 
     return 0;
 }
 
 /*
- * Read from the emu socket, @sock, into an internal buffer. @timeout specifies
+ * Read from the em client, @cli, into an internal buffer. @timeout specifies
  * the timeout for the read in seconds.
  * @return -ETIME if a timeout occurs. -ENOSPC if there is no space remaining
- * in the buffer. -errno if any other error occurs. 0 if the emu closes the
- * connection. Otherwise returns the number of bytes read.
+ * in the buffer. -errno if any other error occurs. 0 if the other side closes
+ * the connection. Otherwise returns the number of bytes read.
  */
-int em_socket_read(emu_socket_t *sock, int timeout)
+int em_client_read(em_client_t *cli, int timeout)
 {
     ssize_t ret;
 
-    assert(sock->nbytes <= EM_SOCKET_BUF_SIZE);
+    assert(cli->nbytes <= EM_CLIENT_BUF_SIZE);
 
-    if (sock->nbytes == EM_SOCKET_BUF_SIZE)
+    if (cli->nbytes == EM_CLIENT_BUF_SIZE)
         return -ENOSPC;
 
-    ret = read_tlimit(sock->fd, sock->buf + sock->nbytes,
-                      EM_SOCKET_BUF_SIZE - sock->nbytes, timeout);
+    ret = read_tlimit(cli->fd, cli->buf + cli->nbytes,
+                      EM_CLIENT_BUF_SIZE - cli->nbytes, timeout);
     if (ret > 0)
-        sock->nbytes += ret;
+        cli->nbytes += ret;
 
     return ret;
 }
 
 /*
- * Process JSON object @jobj from emu socket @sock.
+ * Process JSON object @jobj from em client @cli.
  * @return 0 on success. -errno on error.
  */
-static int process_object(emu_socket_t *sock, json_object *jobj)
+static int process_object(em_client_t *cli, json_object *jobj)
 {
     json_type type;
     int rc = 0;
@@ -149,7 +149,7 @@ static int process_object(emu_socket_t *sock, json_object *jobj)
 
     json_object_object_foreach(jobj, key, val) {
         if (!strcmp(key, "return")) {
-            sock->needs_return = false;
+            cli->needs_return = false;
         } else if (!strcmp(key, "error")) {
             if (json_object_is_type(val, json_type_string))
                 ERR("Error from emu: %s", json_object_get_string(jobj));
@@ -160,8 +160,8 @@ static int process_object(emu_socket_t *sock, json_object *jobj)
             break;
         } else if (!strcmp(key, "event") &&
                    json_object_get_type(val) == json_type_string) {
-            if (sock->callback)
-                sock->callback(jobj, sock);
+            if (cli->callback)
+                cli->callback(jobj, cli);
         } else if (!strcmp(key, "data")) {
             /* Ignore */
         } else {
@@ -177,10 +177,10 @@ out:
 }
 
 /*
- * Process any messages in the internal buffer of emu socket @sock.
+ * Process any messages in the internal buffer of em client @cli.
  * @return The number of messages processed on success. -errno on failure.
  */
-int em_socket_process(emu_socket_t *sock)
+int em_client_process(em_client_t *cli)
 {
     const char *ptr;
     json_object *jobj;
@@ -188,17 +188,17 @@ int em_socket_process(emu_socket_t *sock)
     int processed = 0;
     int rc = 0;
 
-    INFO("Process emu_socket_t read buffer: '%.*s'",
-         sock->nbytes, sock->buf);
+    INFO("Process em_client_t read buffer: '%.*s'",
+         cli->nbytes, cli->buf);
 
-    ptr = sock->buf;
-    while (sock->nbytes) {
-        json_tokener_reset(sock->tok);
-        jobj = json_tokener_parse_ex(sock->tok, ptr, sock->nbytes);
-        jerr = json_tokener_get_error(sock->tok);
+    ptr = cli->buf;
+    while (cli->nbytes) {
+        json_tokener_reset(cli->tok);
+        jobj = json_tokener_parse_ex(cli->tok, ptr, cli->nbytes);
+        jerr = json_tokener_get_error(cli->tok);
 
         if (jerr == json_tokener_continue) {
-            if (sock->nbytes == EM_SOCKET_BUF_SIZE)
+            if (cli->nbytes == EM_CLIENT_BUF_SIZE)
                 return -EMSGSIZE;
             break;
         } else if (jerr != json_tokener_success) {
@@ -207,33 +207,30 @@ int em_socket_process(emu_socket_t *sock)
             break;
         }
 
-        rc = process_object(sock, jobj);
-        sock->nbytes -= sock->tok->char_offset;
-        ptr += sock->tok->char_offset;
+        rc = process_object(cli, jobj);
+        cli->nbytes -= cli->tok->char_offset;
+        ptr += cli->tok->char_offset;
         if (rc < 0)
             break;
         processed++;
     }
 
-    memmove(sock->buf, ptr, sock->nbytes);
+    memmove(cli->buf, ptr, cli->nbytes);
 
     return (rc < 0) ? rc : 0;
 }
 
-int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int fd, struct argument *args)
+int em_client_send_cmd_fd_args(em_client_t* cli, enum command_num cmd_no, int fd, struct argument *args)
 {
    const int buffersize = 128;
    int cmd;
    char buffer[128];
    int r;
-   int socket_fd = -1;
 
    char* out_buffer = NULL;
 
-   assert(sock);
-   assert(sock->fd >= 0);
-
-   socket_fd = sock->fd;
+   assert(cli);
+   assert(cli->fd >= 0);
 
    for (cmd=0; cmd < cmd_number && commands[cmd].number != cmd_no; cmd++) ;
 
@@ -270,9 +267,9 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
   }
 
    if (commands[cmd].fd && fd) {
-        r = send_buf_and_fd(socket_fd, out_buffer, strlen(out_buffer), fd);
+        r = send_buf_and_fd(cli->fd, out_buffer, strlen(out_buffer), fd);
    } else if (!commands[cmd].fd && !fd)
-        r = write_all(socket_fd, out_buffer, strlen(out_buffer));
+        r = write_all(cli->fd, out_buffer, strlen(out_buffer));
    else {
         ERR("Invalid FD param (%d) for %s (needs fd = %d)",fd,  commands[cmd].name, commands[cmd].fd);
         goto error_free;
@@ -288,20 +285,20 @@ int em_socke_send_cmd_fd_args(emu_socket_t* sock, enum command_num cmd_no, int f
       return -1;
    }
 
-    sock->needs_return = true;
+    cli->needs_return = true;
 
     do {
-       r = em_socket_read(sock, EM_READ_TIMEOUT);
+       r = em_client_read(cli, EM_READ_TIMEOUT);
         if (r == 0) {
-            ERR("Unexpected EOF on emu socket\n");
+            ERR("Unexpected EOF on em socket\n");
             return -EPIPE;
         } else if (r < 0) {
             ERR("emu read error: %d, %s\n", -r, strerror(-r));
             return r;
         }
 
-        r = em_socket_process(sock);
-    } while (r >= 0 && sock->needs_return);
+        r = em_client_process(cli);
+    } while (r >= 0 && cli->needs_return);
 
    if (args)
       free(out_buffer);
@@ -317,20 +314,20 @@ error_free:
 
 
 
-int em_socke_send_cmd(emu_socket_t* sock, enum command_num cmd_no)
+int em_client_send_cmd(em_client_t* cli, enum command_num cmd_no)
 {
-    return em_socke_send_cmd_fd_args(sock, cmd_no, 0, NULL);
+    return em_client_send_cmd_fd_args(cli, cmd_no, 0, NULL);
 }
 
 
-int em_socke_send_cmd_fd(emu_socket_t* sock, enum command_num cmd_no, int fd)
+int em_client_send_cmd_fd(em_client_t* cli, enum command_num cmd_no, int fd)
 {
-    return em_socke_send_cmd_fd_args(sock, cmd_no, fd, NULL);
+    return em_client_send_cmd_fd_args(cli, cmd_no, fd, NULL);
 }
 
 
-int em_socke_send_cmd_args(emu_socket_t* sock, enum command_num cmd_no, struct argument *args)
+int em_client_send_cmd_args(em_client_t* cli, enum command_num cmd_no, struct argument *args)
 {
-    return em_socke_send_cmd_fd_args(sock, cmd_no, 0, args);
+    return em_client_send_cmd_fd_args(cli, cmd_no, 0, args);
 }
 
