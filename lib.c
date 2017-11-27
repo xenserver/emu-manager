@@ -146,19 +146,3 @@ int argument_add(struct argument **list, const char *key, const char *value)
 
     return 0;
 }
-
-int argument_list_size(struct argument *list, int *char_count)
-{
-  struct argument *a = list;
-
-  int count = 0;
-  int chars = 0;
-
-  while (a) {
-     count++;
-     chars += strlen(a->key) + strlen(a->value);
-     a = a->next;
-  }
-  *char_count = chars;
-  return count;
-}

@@ -220,109 +220,115 @@ int em_client_process(em_client_t *cli)
     return (rc < 0) ? rc : 0;
 }
 
-int em_client_send_cmd_fd_args(em_client_t* cli, enum command_num cmd_num, int fd, struct argument *args)
+/*
+ * Send the command given by @cmd_num, an @fd, and a list of arguments given by
+ * @arg to em client @cli. Wait for a response.
+ * @return 0 on success. -errno on error.
+ */
+int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
+                               int fd, struct argument *arg)
 {
-   const int buffersize = 128;
-   char buffer[128];
-   const struct command *cmd;
-   int r;
+    char buf[EM_CLIENT_BUF_SIZE];
+    const struct command *cmd = command_from_num(cmd_num);
+    int rc;
 
-   char* out_buffer = NULL;
+    assert(cli);
+    assert(!cmd->needs_fd || fd >= 0);
 
-   assert(cli);
-   assert(cli->fd >= 0);
+    INFO("sending %s", cmd->name);
 
-   cmd = command_from_num(cmd_num);
+    if (arg) {
+        char *ptr = buf;
+        int remaining = EM_CLIENT_BUF_SIZE;
 
-   INFO("sending %s", cmd->name);
+        rc = snprintf(ptr, remaining,
+                      "{ \"execute\" : \"%s\", \"arguments\" : { ", cmd->name);
+        if (rc < 0)
+            return -rc;
+        if (rc >= remaining)
+            return -EMSGSIZE;
+        ptr += rc;
+        remaining -= rc;
 
-   if (args) {
-       int buf_size;
-       struct argument *al = args;
-       
-       r = argument_list_size(args, &buf_size);
-       buf_size += strlen("\"\":\"\", ") * r + strlen("} }"); /* note: \0 takes spair ',' space */
+        while (arg) {
+            rc = snprintf(ptr, remaining, "\"%s\":\"%s\"%s ",
+                          arg->key, arg->value, arg->next ? "," : "");
+            if (rc < 0)
+                return -rc;
+            if (rc >= remaining)
+                return -EMSGSIZE;
+            ptr += rc;
+            remaining -= rc;
 
-       buf_size += snprintf(buffer, buffersize, "{ \"execute\" : \"%s\", \"arguments\" : { ", cmd->name);
-
-       out_buffer = malloc(buf_size);
-       strcpy(out_buffer, buffer);
-
-
-       while (al) {
-          snprintf(buffer, buffersize, "\"%s\":\"%s\"%s ", al->key, al->value, (al->next)?",":"");
-          strcat(out_buffer, buffer);
-          al = al->next;
-       }
-
-       strcat(out_buffer, "} }");
-       }
-   else {
-       snprintf(buffer, buffersize, "{ \"execute\" : \"%s\"}", cmd->name);
-       out_buffer = buffer;
-  }
-
-   if (cmd->needs_fd && fd) {
-        r = send_buf_and_fd(cli->fd, out_buffer, strlen(out_buffer), fd);
-   } else if (!cmd->needs_fd && !fd)
-        r = write_all(cli->fd, out_buffer, strlen(out_buffer));
-   else {
-        ERR("Invalid FD param (%d) for %s (needs fd = %d)",fd,  cmd->name, cmd->needs_fd);
-        goto error_free;
-   }
-
-   if (args) {
-     free(out_buffer);
-     out_buffer = NULL;
-   }
-
-   if (r < 0) {
-      ERRN("Send()");
-      return -1;
-   }
-
-    cli->needs_return = true;
-
-    do {
-       r = em_client_read(cli, EM_READ_TIMEOUT);
-        if (r == 0) {
-            ERR("Unexpected EOF on em socket\n");
-            return -EPIPE;
-        } else if (r < 0) {
-            ERR("emu read error: %d, %s\n", -r, strerror(-r));
-            return r;
+            arg = arg->next;
         }
 
-        r = em_client_process(cli);
-    } while (r >= 0 && cli->needs_return);
+        rc = snprintf(ptr, remaining, "} }");
+        if (rc < 0)
+            return -rc;
+        if (rc >= remaining)
+            return -EMSGSIZE;
+    } else {
+        rc = snprintf(buf, EM_CLIENT_BUF_SIZE,
+                      "{ \"execute\" : \"%s\"}", cmd->name);
+        if (rc < 0)
+            return -rc;
+        if (rc >= EM_CLIENT_BUF_SIZE)
+            return -EMSGSIZE;
+    }
 
-   if (args)
-      free(out_buffer);
+    if (cmd->needs_fd)
+        rc = send_buf_and_fd(cli->fd, buf, strlen(buf), fd);
+    else
+        rc = write_all(cli->fd, buf, strlen(buf));
 
-    return (r < 0) ? r : 0;
+    if (rc)
+        return rc;
 
-error_free:
-   if (args)
-      free(out_buffer);
-   return -1;
+    cli->needs_return = true;
+    do {
+        rc = em_client_read(cli, EM_READ_TIMEOUT);
+        if (rc == 0) {
+            ERR("Unexpected EOF on em socket\n");
+            return -EPIPE;
+        } else if (rc < 0) {
+            ERR("emu read error: %d, %s\n", -rc, strerror(-rc));
+            return rc;
+        }
+
+        rc = em_client_process(cli);
+    } while (rc >= 0 && cli->needs_return);
+
+    return (rc < 0) ? rc : 0;
 }
 
-
-
-
-int em_client_send_cmd(em_client_t* cli, enum command_num cmd_num)
+/*
+ * Send the command given by @cmd_num to em client @cli. Wait for a
+ * response.
+ * @return 0 on success. -errno on error.
+ */
+int em_client_send_cmd(em_client_t *cli, enum command_num cmd_num)
 {
-    return em_client_send_cmd_fd_args(cli, cmd_num, 0, NULL);
+    return em_client_send_cmd_fd_args(cli, cmd_num, -1, NULL);
 }
 
-
-int em_client_send_cmd_fd(em_client_t* cli, enum command_num cmd_num, int fd)
+/*
+ * Send the command given by @cmd_num and an @fd to em client @cli. Wait for
+ * a response.
+ * @return 0 on success. -errno on error.
+ */
+int em_client_send_cmd_fd(em_client_t *cli, enum command_num cmd_num, int fd)
 {
     return em_client_send_cmd_fd_args(cli, cmd_num, fd, NULL);
 }
 
-
-int em_client_send_cmd_args(em_client_t* cli, enum command_num cmd_num, struct argument *args)
+/*
+ * Send the command given by @cmd_num and a list of arguments given by @arg to
+ * em client @cli. Wait for a response.
+ * @return 0 on success. -errno on error.
+ */
+int em_client_send_cmd_args(em_client_t *cli, enum command_num cmd_num,
+                            struct argument *arg)
 {
-    return em_client_send_cmd_fd_args(cli, cmd_num, 0, args);
+    return em_client_send_cmd_fd_args(cli, cmd_num, -1, arg);
 }
