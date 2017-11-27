@@ -127,41 +127,43 @@ int em_socket_alloc(emu_socket_t **sock, em_socket_callback callback,
     return 0;
 }
 
-int em_socket_open(emu_socket_t *sock, char* path)
+/*
+ * Connect the emu_socket_t given by @sock to @path.
+ * @return 0 on success. -errno on error.
+ */
+int em_socket_connect(emu_socket_t *sock, const char *path)
 {
-   int  socket_fd;
-   struct sockaddr_un address;
+    struct sockaddr_un addr;
+    int fd;
 
-   assert(sock);
+    assert(sock);
 
-   socket_fd = socket(PF_UNIX, SOCK_STREAM, 0);
-   if(socket_fd < 0)
-   {
-      int saved_errno = errno;
-      ERRN("socket()");
-      return -saved_errno;
-   }
+    if (strlen(path) >= sizeof(addr.sun_path))
+        return ENAMETOOLONG;
 
-   /* start with a clean address structure */
-   memset(&address, 0, sizeof(struct sockaddr_un));
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        int saved_errno = errno;
+        ERRN("socket()");
+        return -saved_errno;
+    }
 
-   address.sun_family = AF_UNIX;
-   strncpy(address.sun_path, path, 107);
-   address.sun_path[107]='\0';
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strcpy(addr.sun_path, path);
 
-   INFO(" connect to '%s'", address.sun_path);
+    INFO(" connect to '%s'", addr.sun_path);
 
-   if(connect(socket_fd,
-       (struct sockaddr *) &address,
-            sizeof(struct sockaddr_un)) != 0)
-   {
-       int saved_errno = errno;
-       ERRN("connect()");
-       close(socket_fd);
-       return -saved_errno;
-   }
-   sock->fd=socket_fd;
-   return 0;
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
+    {
+        int saved_errno = errno;
+        ERRN("connect()");
+        close(fd);
+        return -saved_errno;
+    }
+    sock->fd = fd;
+
+    return 0;
 }
 
 static int print_jerror(json_object *jobj)

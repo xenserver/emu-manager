@@ -955,18 +955,20 @@ static int startup_emus(void)
  * Open a connection to @emu.
  * @return 0 on success. -errno on failure.
  */
-static int connect_emu(struct emu* emu)
+static int connect_emu(struct emu *emu)
 {
+    char path[64];
+    int rc;
 
-    int r;
-    char fname[128];
+    rc = snprintf(path, sizeof(path), CONTROL_PATH, emu->name, gDomid);
+    if (rc < 0)
+        return -errno;
 
-    snprintf(fname, 128, CONTROL_PATH, emu->name, gDomid); 
-    r = em_socket_alloc(&emu->sock, &emu_callback, emu);
-    if (r)
-        return r;
+    rc = em_socket_alloc(&emu->sock, emu_callback, emu);
+    if (rc)
+        return rc;
 
-    return em_socket_open(emu->sock, fname);
+    return em_socket_connect(emu->sock, path);
 }
 
 /*
