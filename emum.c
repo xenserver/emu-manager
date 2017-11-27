@@ -629,8 +629,6 @@ static void parse_args(int argc, char *argv[])
     }
 }
 
-EMP_COMMANDS(commands);
-
 /* Given @command, a list of program arguments, substitute all parameterized
  * arguments. This modifies @command.
  * @return 0 on success. -errno on failure.

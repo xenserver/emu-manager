@@ -220,11 +220,11 @@ int em_client_process(em_client_t *cli)
     return (rc < 0) ? rc : 0;
 }
 
-int em_client_send_cmd_fd_args(em_client_t* cli, enum command_num cmd_no, int fd, struct argument *args)
+int em_client_send_cmd_fd_args(em_client_t* cli, enum command_num cmd_num, int fd, struct argument *args)
 {
    const int buffersize = 128;
-   int cmd;
    char buffer[128];
+   const struct command *cmd;
    int r;
 
    char* out_buffer = NULL;
@@ -232,13 +232,9 @@ int em_client_send_cmd_fd_args(em_client_t* cli, enum command_num cmd_no, int fd
    assert(cli);
    assert(cli->fd >= 0);
 
-   for (cmd=0; cmd < cmd_number && commands[cmd].number != cmd_no; cmd++) ;
+   cmd = command_from_num(cmd_num);
 
-   if (commands[cmd].number != cmd_no) {
-      ERR("Bad command");
-      return -1;
-   }
-   INFO("sending %s", commands[cmd].name);
+   INFO("sending %s", cmd->name);
 
    if (args) {
        int buf_size;
@@ -247,7 +243,7 @@ int em_client_send_cmd_fd_args(em_client_t* cli, enum command_num cmd_no, int fd
        r = argument_list_size(args, &buf_size);
        buf_size += strlen("\"\":\"\", ") * r + strlen("} }"); /* note: \0 takes spair ',' space */
 
-       buf_size += snprintf(buffer, buffersize, "{ \"execute\" : \"%s\", \"arguments\" : { ", commands[cmd].name);
+       buf_size += snprintf(buffer, buffersize, "{ \"execute\" : \"%s\", \"arguments\" : { ", cmd->name);
 
        out_buffer = malloc(buf_size);
        strcpy(out_buffer, buffer);
@@ -262,16 +258,16 @@ int em_client_send_cmd_fd_args(em_client_t* cli, enum command_num cmd_no, int fd
        strcat(out_buffer, "} }");
        }
    else {
-       snprintf(buffer, buffersize, "{ \"execute\" : \"%s\"}", commands[cmd].name);
+       snprintf(buffer, buffersize, "{ \"execute\" : \"%s\"}", cmd->name);
        out_buffer = buffer;
   }
 
-   if (commands[cmd].fd && fd) {
+   if (cmd->needs_fd && fd) {
         r = send_buf_and_fd(cli->fd, out_buffer, strlen(out_buffer), fd);
-   } else if (!commands[cmd].fd && !fd)
+   } else if (!cmd->needs_fd && !fd)
         r = write_all(cli->fd, out_buffer, strlen(out_buffer));
    else {
-        ERR("Invalid FD param (%d) for %s (needs fd = %d)",fd,  commands[cmd].name, commands[cmd].fd);
+        ERR("Invalid FD param (%d) for %s (needs fd = %d)",fd,  cmd->name, cmd->needs_fd);
         goto error_free;
    }
 
@@ -314,20 +310,19 @@ error_free:
 
 
 
-int em_client_send_cmd(em_client_t* cli, enum command_num cmd_no)
+int em_client_send_cmd(em_client_t* cli, enum command_num cmd_num)
 {
-    return em_client_send_cmd_fd_args(cli, cmd_no, 0, NULL);
+    return em_client_send_cmd_fd_args(cli, cmd_num, 0, NULL);
 }
 
 
-int em_client_send_cmd_fd(em_client_t* cli, enum command_num cmd_no, int fd)
+int em_client_send_cmd_fd(em_client_t* cli, enum command_num cmd_num, int fd)
 {
-    return em_client_send_cmd_fd_args(cli, cmd_no, fd, NULL);
+    return em_client_send_cmd_fd_args(cli, cmd_num, fd, NULL);
 }
 
 
-int em_client_send_cmd_args(em_client_t* cli, enum command_num cmd_no, struct argument *args)
+int em_client_send_cmd_args(em_client_t* cli, enum command_num cmd_num, struct argument *args)
 {
-    return em_client_send_cmd_fd_args(cli, cmd_no, 0, args);
+    return em_client_send_cmd_fd_args(cli, cmd_num, 0, args);
 }
-

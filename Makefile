@@ -1,6 +1,8 @@
 TARGET = emu-manager
 
-OBJS :=	emum.o \
+OBJS := \
+	emp.o \
+	emum.o \
 	em-client.o \
 	lib.o
 
