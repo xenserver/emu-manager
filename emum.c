@@ -761,7 +761,7 @@ static int process_status_stats(struct emu *emu, int iter, int sent, int rem)
 }
 
 /* where events are parsed */
-static int emu_callback(json_object *jobj, em_client_t* cli)
+static int emu_event_cb(json_object *jobj, em_client_t* cli)
 {
    struct emu* emu = (struct emu*) cli->data;
    int r;
@@ -896,7 +896,7 @@ static int connect_emu(struct emu *emu)
     if (rc < 0)
         return -errno;
 
-    rc = em_client_alloc(&emu->client, emu_callback, emu);
+    rc = em_client_alloc(&emu->client, emu_event_cb, emu);
     if (rc)
         return rc;
 

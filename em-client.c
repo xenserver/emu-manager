@@ -29,7 +29,7 @@
  * Allocate and initialize an em_client_t object.
  * @return 0 on success. -errno on error.
  */
-int em_client_alloc(em_client_t **cli, em_client_callback callback,
+int em_client_alloc(em_client_t **cli, em_client_event_cb event_cb,
                     void *data)
 {
     em_client_t *c;
@@ -49,7 +49,7 @@ int em_client_alloc(em_client_t **cli, em_client_callback callback,
     }
     c->fd = -1;
     c->data = data;
-    c->callback = callback;
+    c->event_cb = event_cb;
     c->nbytes = 0;
     c->needs_return = false;
     *cli = c;
@@ -160,8 +160,11 @@ static int process_object(em_client_t *cli, json_object *jobj)
             break;
         } else if (!strcmp(key, "event") &&
                    json_object_get_type(val) == json_type_string) {
-            if (cli->callback)
-                cli->callback(jobj, cli);
+            if (cli->event_cb) {
+                rc = cli->event_cb(jobj, cli);
+                if (rc)
+                    break;
+            }
         } else if (!strcmp(key, "data")) {
             /* Ignore */
         } else {
