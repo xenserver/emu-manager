@@ -1,13 +1,17 @@
 #include "lib.h"
 
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include <unistd.h>
 #include <errno.h>
+#include <syslog.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <poll.h>
+
+static bool debug_log;
 
 /*
  * Read up to @len bytes into @buf from @fd, waiting for up to @time seconds
@@ -176,4 +180,46 @@ int close_retry(int fd)
         ;
 
     return rc == 1 ? -errno : 0;
+}
+
+/* Set debug logging to @enabled. */
+void log_debug_set(bool enabled)
+{
+    debug_log = enabled;
+}
+
+/*
+ * Log a message to syslog at the debug log level only if debug logging is
+ * enabled.
+ */
+void log_debug(char *fmt, ...)
+{
+    va_list ap;
+
+    if (!debug_log)
+        return;
+
+    va_start(ap, fmt);
+    vsyslog(LOG_DEBUG, fmt, ap);
+    va_end(ap);
+}
+
+/* Log a message to syslog at the info log level. */
+void log_info(char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsyslog(LOG_INFO, fmt, ap);
+    va_end(ap);
+}
+
+/* Log a message to syslog at the error log level. */
+void log_err(char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsyslog(LOG_ERR, fmt, ap);
+    va_end(ap);
 }

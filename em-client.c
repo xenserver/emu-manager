@@ -7,7 +7,6 @@
 
 #include <unistd.h>
 #include <errno.h>
-#include <syslog.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -15,16 +14,6 @@
 #include "lib.h"
 
 #define READ_TIMEOUT 30
-
-#define INFO(args...) syslog(LOG_DAEMON|LOG_INFO, args)
-#define ERR(args...) syslog(LOG_DAEMON|LOG_ERR, args)
-#define ERRN(str1)  syslog(LOG_DAEMON|LOG_ERR, "%s: %s failed with err %s", __func__, str1, strerror(errno))
-
-#if 1
-#define DEBUG(args...) syslog(LOG_DAEMON|LOG_INFO, args)
-#else
-#define DEBUG(args...)
-#endif
 
 /*
  * Allocate and initialize an em_client_t object.
@@ -39,12 +28,12 @@ int em_client_alloc(em_client_t **cli, em_client_event_cb event_cb,
 
     c = malloc(sizeof(em_client_t));
     if (!c) {
-        ERR("Failed to allocate em_client_t");
+        log_err("Failed to allocate em_client_t");
         return -ENOMEM;
     }
     c->tok = json_tokener_new();
     if (!c->tok) {
-        ERR("Failed to allocate JSON tokener");
+        log_err("Failed to allocate JSON tokener");
         free(c);
         return -ENOMEM;
     }
@@ -88,7 +77,7 @@ int em_client_connect(em_client_t *cli, const char *path)
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         int saved_errno = errno;
-        ERRN("socket()");
+        log_err("socket()");
         return -saved_errno;
     }
 
@@ -96,12 +85,12 @@ int em_client_connect(em_client_t *cli, const char *path)
     addr.sun_family = AF_UNIX;
     strcpy(addr.sun_path, path);
 
-    INFO(" connect to '%s'", addr.sun_path);
+    log_info(" connect to '%s'", addr.sun_path);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
     {
         int saved_errno = errno;
-        ERRN("connect()");
+        log_err("connect()");
         close_retry(fd);
         return -saved_errno;
     }
@@ -148,7 +137,7 @@ static int process_object(em_client_t *cli, json_object *jobj)
 
     type = json_object_get_type(jobj);
     if (type != json_type_object) {
-        ERR("Expected JSON object, but got %d", type);
+        log_err("Expected JSON object, but got %d", type);
         return -EINVAL;
     }
 
@@ -157,9 +146,9 @@ static int process_object(em_client_t *cli, json_object *jobj)
             cli->needs_return = false;
         } else if (!strcmp(key, "error")) {
             if (json_object_is_type(val, json_type_string))
-                ERR("Error from emu: %s", json_object_get_string(jobj));
+                log_err("Error from emu: %s", json_object_get_string(jobj));
             else
-                ERR("Unknown error from emu: %s",
+                log_err("Unknown error from emu: %s",
                     json_object_to_json_string(jobj));
             return -EINVAL;
         } else if (!strcmp(key, "event") &&
@@ -169,7 +158,7 @@ static int process_object(em_client_t *cli, json_object *jobj)
                    json_object_get_type(val) == json_type_object) {
             data = val;
         } else {
-            ERR("Unexpected key %s\n", key);
+            log_err("Unexpected key %s\n", key);
             return -EINVAL;
         }
     }
@@ -178,10 +167,10 @@ static int process_object(em_client_t *cli, json_object *jobj)
         if (cli->event_cb)
             return cli->event_cb(cli, json_object_get_string(event), data);
     } else if (event && !data) {
-        ERR("Event without data");
+        log_err("Event without data");
         return -EINVAL;
     } else if (!event && data) {
-        ERR("Data without event");
+        log_err("Data without event");
         return -EINVAL;
     }
 
@@ -200,8 +189,8 @@ int em_client_process(em_client_t *cli)
     int processed = 0;
     int rc = 0;
 
-    INFO("Process em_client_t read buffer: '%.*s'",
-         cli->nbytes, cli->buf);
+    log_info("Process em_client_t read buffer: '%.*s'",
+             cli->nbytes, cli->buf);
 
     ptr = cli->buf;
     while (cli->nbytes) {
@@ -214,7 +203,7 @@ int em_client_process(em_client_t *cli)
                 return -EMSGSIZE;
             break;
         } else if (jerr != json_tokener_success) {
-            ERR("Error from tokener: %s", json_tokener_error_desc(jerr));
+            log_err("Error from tokener: %s", json_tokener_error_desc(jerr));
             rc = -EINVAL;
             break;
         }
@@ -248,7 +237,7 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
     assert(cli);
     assert(!cmd->needs_fd || fd >= 0);
 
-    INFO("sending %s", cmd->name);
+    log_info("sending %s", cmd->name);
 
     if (arg) {
         char *ptr = buf;
@@ -302,10 +291,10 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
     do {
         rc = em_client_read(cli, READ_TIMEOUT);
         if (rc == 0) {
-            ERR("Unexpected EOF on em socket\n");
+            log_err("Unexpected EOF on em socket\n");
             return -EPIPE;
         } else if (rc < 0) {
-            ERR("emu read error: %d, %s\n", -rc, strerror(-rc));
+            log_err("emu read error: %d, %s\n", -rc, strerror(-rc));
             return rc;
         }
 

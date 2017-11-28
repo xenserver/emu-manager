@@ -83,9 +83,6 @@ struct emu {
     int iter;
 };
 
-#define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
-#define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
-
 #define CONTROL_PATH "/var/xen/%s/%d/control"
 
 #define XENOPSD_TIMEOUT 120
@@ -169,11 +166,11 @@ static int xenopsd_read(int timeout)
  */
 static int xenopsd_process_message(const char *msg)
 {
-    emu_info("Processing '%s'", msg);
+    log_info("Processing '%s'", msg);
 
     if (!strcmp(msg, XENOPSD_ACK_MSG)) {
         if (!xenopsd_needs_ack) {
-            emu_err("Unexpected ACK received from xenopsd");
+            log_err("Unexpected ACK received from xenopsd");
             return -EINVAL;
         }
         xenopsd_needs_ack = false;
@@ -185,14 +182,14 @@ static int xenopsd_process_message(const char *msg)
 
         emu = find_emu_by_name(msg);
         if (!emu) {
-            emu_err("Did do not know '%s'", msg);
+            log_err("Did do not know '%s'", msg);
             return -EINVAL;
         }
 
         return restore_emu(emu);
     }
 
-    emu_err("Unexpected message from xenopsd: %s", msg);
+    log_err("Unexpected message from xenopsd: %s", msg);
     return -EINVAL;
 }
 
@@ -206,7 +203,7 @@ static int xenopsd_process(void)
     int rc = 0;
     char *ptr, *endl;
 
-    emu_info("Process xenopsd read buffer: '%.*s'",
+    log_info("Process xenopsd read buffer: '%.*s'",
              xenopsd_nbytes, xenopsd_rbuf);
 
     ptr = xenopsd_rbuf;
@@ -240,11 +237,11 @@ static int xenopsd_send_message(const char *msg)
 {
     int rc;
 
-    emu_info("Send '%s' to xenopsd", msg);
+    log_info("Send '%s' to xenopsd", msg);
 
     rc = write_all(xenopsd_out, msg, strlen(msg));
     if (rc)
-        emu_err("Failed to write to xenopsd %d, %s", -rc, strerror(-rc));
+        log_err("Failed to write to xenopsd %d, %s", -rc, strerror(-rc));
 
     return rc;
 }
@@ -287,10 +284,10 @@ static int xenopsd_send_message_with_ack(const char *msg)
     do {
         rc = xenopsd_read(XENOPSD_TIMEOUT);
         if (rc == 0) {
-            emu_err("Unexpected EOF on xenopsd control fd\n");
+            log_err("Unexpected EOF on xenopsd control fd\n");
             return -EPIPE;
         } else if (rc < 0) {
-            emu_err("xenopsd read error: %d, %s\n", -rc, strerror(-rc));
+            log_err("xenopsd read error: %d, %s\n", -rc, strerror(-rc));
             return rc;
         }
 
@@ -387,7 +384,7 @@ static int parse_int(const char *str)
     result = strtol(str, &end, 10);
 
     if (errno || *end || (int)result != result) {
-        emu_err("Cannot parse '%s' as a valid integer", str);
+        log_err("Cannot parse '%s' as a valid integer", str);
         exit(1);
     }
 
@@ -413,7 +410,7 @@ static void parse_dm_arg(char *arg)
     emu = find_emu_by_name(arg);
 
     if (!emu) {
-        emu_err("Bad dm arg: '%s', '%s'", arg, param);
+        log_err("Bad dm arg: '%s', '%s'", arg, param);
         exit(1);
     }
 
@@ -492,7 +489,7 @@ static void parse_args(int argc, char *argv[])
         if (c == -1)
             break;
 
-        emu_info("c=%d, arg_index=%d, optarg=%s", c, arg_index, optarg);
+        log_info("c=%d, arg_index=%d, optarg=%s", c, arg_index, optarg);
 
         switch (c) {
         case arg_controlinfd:
@@ -502,6 +499,7 @@ static void parse_args(int argc, char *argv[])
             xenopsd_out = parse_int(optarg);
             break;
         case arg_debuglog:
+            log_debug_set(!strcmp(optarg, "true"));
             break;
         case arg_fd:
             emus[0].stream = parse_int(optarg);
@@ -513,7 +511,7 @@ static void parse_args(int argc, char *argv[])
             if (!strcmp(optarg, "true")) {
                 live_migrate = true;
             } else if (strcmp(optarg, "false")) {
-                emu_err("Unknown live argument: '%s'", optarg);
+                log_err("Unknown live argument: '%s'", optarg);
                 exit(1);
             }
             break;
@@ -523,18 +521,18 @@ static void parse_args(int argc, char *argv[])
         case arg_mode:
             idx = strindex(mode_names, optarg);
             if (idx < 0) {
-                emu_err("Unknown mode '%s'", optarg);
+                log_err("Unknown mode '%s'", optarg);
                 exit(1);
             }
             operation_mode = idx;
             break;
         case arg_xg_store_port:
         case arg_xg_console_port:
-            emu_info("adding xenguest special option %s = %s",
+            log_info("adding xenguest special option %s = %s",
                      args[arg_index].name, optarg);
             rc = argument_add(&emus[0].extra, args[arg_index].name, optarg);
             if (rc) {
-                emu_err("Error adding xenguest argument: %d, %s",
+                log_err("Error adding xenguest argument: %d, %s",
                         -rc, strerror(-rc));
                 exit(1);
             }
@@ -549,14 +547,14 @@ static void parse_args(int argc, char *argv[])
                 printf("false\n");
             break;
         default:
-            emu_err("Error parsing arguments");
+            log_err("Error parsing arguments");
             exit(1);
             break;
         }
     }
 
     if (optind < argc) {
-        emu_err("Unknown extra arguments");
+        log_err("Unknown extra arguments");
         exit(1);
     }
 }
@@ -603,7 +601,7 @@ static int setenv_nobuffs(void)
     clearenv();
     if ((putenv("LD_PRELOAD=/usr/libexec/coreutils/libstdbuf.so")!=0) ||
         (putenv ("_STDBUF_O=0") != 0)) {
-        emu_err("Failed to putenv\n");
+        log_err("Failed to putenv\n");
         return -1;
     }
     return 0;
@@ -736,7 +734,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
     int iter = -1;
 
     if (strcmp(event, "MIGRATION")) {
-        emu_err("Unknown event type: %s", event);
+        log_err("Unknown event type: %s", event);
         return -EINVAL;
     }
 
@@ -746,12 +744,12 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
                 const char *status = json_object_get_string(val);
 
                 if (strcmp(status, "completed")) {
-                    emu_info("Error: emu %s status: %s", emu->name, status);
+                    log_info("Error: emu %s status: %s", emu->name, status);
                     return -EINVAL;
                 }
                 emu->status = all_done;
             } else {
-                emu_err("Unexpected event data");
+                log_err("Unexpected event data");
                 return -EINVAL;
             }
         } else if (!strcmp(key, "result")) {
@@ -760,7 +758,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
                 if (!emu->result)
                     return -ENOMEM;
             } else {
-                emu_err("Unexpected event data");
+                log_err("Unexpected event data");
                 return -EINVAL;
             }
         }  else if (json_object_get_type(val) == json_type_int) {
@@ -771,11 +769,11 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
             } else if (!strcmp(key, "iteration")) {
                 iter = json_object_get_int(val);
             } else {
-                emu_err("Unexpected event data");
+                log_err("Unexpected event data");
                 return -EINVAL;
             }
         } else {
-            emu_err("Unexpected event data");
+            log_err("Unexpected event data");
             return -EINVAL;
         }
     }
@@ -799,11 +797,11 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
         if (progress < 0)
             return progress;
 
-        emu_info("Event for %s: rem %"PRId64", sent %"PRId64", iter %d, %s. Progress = %d",
+        log_info("Event for %s: rem %"PRId64", sent %"PRId64", iter %d, %s. Progress = %d",
                  emu->name, rem, sent, iter,
                  ready ? "waiting" : "not waiting", progress);
         if ((iter > 0) && (rem < 50 || iter >= 4) && !ready) {
-            emu_info("emu %s: live done", emu->name);
+            log_info("emu %s: live done", emu->name);
             emu->status = live_done;
         }
     }
@@ -822,11 +820,11 @@ static int startup_emus(void)
 
     for (i = 0; i < num_emus; i++) {
         if (emus[i].startup) {
-            emu_info("Starting %s\n", emus[i].name);
+            log_info("Starting %s\n", emus[i].name);
 
             rc = substitute_args(emus[i].startup);
             if (rc) {
-                emu_err("Error substituting arguments for %s: %d, %s",
+                log_err("Error substituting arguments for %s: %d, %s",
                         emus[i].name, -rc, strerror(-rc));
                 return rc;
             }
@@ -834,7 +832,7 @@ static int startup_emus(void)
             rc = exec_command(emus[i].startup,
                               emus[i].waitfor, emus[i].waitfor_size);
             if (rc) {
-                emu_err("Error starting %s: %d, %s",
+                log_err("Error starting %s: %d, %s",
                         emus[i].name, -rc, strerror(-rc));
                 return rc;
             }
@@ -881,7 +879,7 @@ static int connect_emus(void)
         switch (emu->proto) {
         case emp:
             if ((rc = connect_emu(emu))) {
-                emu_err("Failed to connect to %s: %d, %s",
+                log_err("Failed to connect to %s: %d, %s",
                         emu->name, -rc, strerror(-rc));
                 return rc;
             }
@@ -975,15 +973,15 @@ static int restore_emu(struct emu *emu)
     int rc;
 
     if (emu->status != not_done) {
-        emu_err("Request to restore emu '%s' already in progress", emu->name);
+        log_err("Request to restore emu '%s' already in progress", emu->name);
         return -EINVAL;
     }
 
-    emu_info("restore %s", emu->name);
+    log_info("restore %s", emu->name);
 
     rc = em_client_send_cmd(emu->client, cmd_restore);
     if (rc < 0) {
-        emu_err("Failed to start restore for %s\n", emu->name);
+        log_err("Failed to start restore for %s\n", emu->name);
         return rc;
     }
 
@@ -1007,12 +1005,12 @@ static int migrate_live_emus(void)
 
         rc = xenopsd_send_prepare(&emus[i]);
         if (rc < 0) {
-            emu_err("Failed to prepare stream for %s: %d, %s\n",
+            log_err("Failed to prepare stream for %s: %d, %s\n",
                     emus[i].name, -rc, strerror(-rc));
             return rc;
         }
 
-        emu_info("Migrate live %d: %s", i, emus[i].name);
+        log_info("Migrate live %d: %s", i, emus[i].name);
         rc = em_client_send_cmd(emus[i].client, cmd_migrate_live);
         if (rc)
             return rc;
@@ -1112,14 +1110,14 @@ static int wait_for_event(void)
         if (FD_ISSET(xenopsd_in, &rfds)) {
             r = xenopsd_read(0);
             if (r == 0) {
-                emu_err("Unexpected EOF on xenopsd control fd\n");
+                log_err("Unexpected EOF on xenopsd control fd\n");
                 return -EPIPE;
             } else if (r < 0) {
-                emu_err("xenospd read error: %d, %s\n", -r, strerror(-r));
+                log_err("xenospd read error: %d, %s\n", -r, strerror(-r));
                 return r;
             }
             r = xenopsd_process();
-            emu_info("control message rc = %d", r);
+            log_info("control message rc = %d", r);
             if (r < 0 )
                 return r;
         }
@@ -1128,14 +1126,14 @@ static int wait_for_event(void)
             if (emus[i].enabled && FD_ISSET(emus[i].client->fd, &rfds)) {
                 r = em_client_read(emus[i].client, 0);
                 if (r == 0) {
-                    emu_err("Unexpected EOF on emu socket\n");
+                    log_err("Unexpected EOF on emu socket\n");
                     return -EPIPE;
                 } else if (r < 0) {
-                    emu_err("emu read error: %d, %s\n", -r, strerror(-r));
+                    log_err("emu read error: %d, %s\n", -r, strerror(-r));
                     return r;
                 }
                 r = em_client_process(emus[i].client);
-                emu_info("em client message rc = %d", r);
+                log_info("em client message rc = %d", r);
                 if (r < 0 )
                     return r;
             }
@@ -1183,7 +1181,7 @@ static int wait_on_condition(bool (*check)(const struct emu *emu))
 
         rc = wait_for_event();
         if (rc < 0 && rc != -ETIME) {
-            emu_err("Error waiting for events: %d, %s",
+            log_err("Error waiting for events: %d, %s",
                     -rc, strerror(-rc));
             return -rc;
         }
@@ -1217,7 +1215,7 @@ static int save_nonlive_one_by_one(void)
         while (emus[i].status != all_done) {
             rc = wait_for_event();
             if (rc < 0 && rc != -ETIME) {
-                emu_err("Error waiting for events: %d, %s",
+                log_err("Error waiting for events: %d, %s",
                         -rc, strerror(-rc));
                 return -rc;
             }
@@ -1239,7 +1237,7 @@ static void configure_emus(void)
 
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled & STAGE_ENABLED) {
-            emu_info("emu %s enabled", emus[i].name);
+            log_info("emu %s enabled", emus[i].name);
             if (!live_migrate)
                 emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) & ~STAGE_LIVE;
         } else {
@@ -1272,7 +1270,7 @@ static int operation_load(void)
     if (rc)
         goto out;
 
-    emu_info("Wait for completion");
+    log_info("Wait for completion");
     /* Count number of emus we need to wait for. */
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled)
@@ -1281,14 +1279,14 @@ static int operation_load(void)
     while (remaining) {
         rc = wait_for_event();
         if (rc < 0 && rc != -ETIME) {
-            emu_err("Error waiting for events: %d, %s",
+            log_err("Error waiting for events: %d, %s",
                     -rc, strerror(-rc));
             goto out;
         }
 
         for (i = 0; i < num_emus; i++) {
             if (emus[i].status == all_done) {
-                emu_info("emu %s complete", emus[i].name);
+                log_info("emu %s complete", emus[i].name);
                 xenopsd_send_result(&emus[i]);
                 emus[i].status = result_sent;
                 remaining--;
@@ -1300,7 +1298,7 @@ static int operation_load(void)
 out:
     end_rc = migrate_end();
     if (end_rc) {
-        emu_err("Error calling migrate_end(): %d, %s",
+        log_err("Error calling migrate_end(): %d, %s",
                 -end_rc, strerror(-end_rc));
         if (!rc)
             rc = end_rc;
@@ -1310,7 +1308,7 @@ out:
         end_rc = xenopsd_send_error_result(rc);
 
         if (end_rc)
-            emu_err("sending error to xenopsd failed: %d, %s",
+            log_err("sending error to xenopsd failed: %d, %s",
                     -end_rc, strerror(-end_rc));
     }
 
@@ -1329,7 +1327,7 @@ static int migrate_abort(void)
     int rc = 0;
     int ret;
 
-    emu_info("Tell all emus to abort");
+    log_info("Tell all emus to abort");
 
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled) {
@@ -1412,14 +1410,14 @@ out:
     if (rc && can_abort) {
         end_rc = migrate_abort();
         if (end_rc)
-            emu_err("Error calling migrate_abort(): %d, %s",
+            log_err("Error calling migrate_abort(): %d, %s",
                     -end_rc, strerror(-end_rc));
     }
 
     if (!end_rc) {
         end_rc = migrate_end();
         if (end_rc) {
-            emu_err("Error calling migrate_end(): %d, %s",
+            log_err("Error calling migrate_end(): %d, %s",
                     -end_rc, strerror(-end_rc));
             if (!rc)
                 rc = end_rc;
@@ -1429,7 +1427,7 @@ out:
     if (rc) {
         end_rc = xenopsd_send_error_result(rc);
         if (end_rc)
-            emu_err("sending error to xenopsd failed: %d, %s",
+            log_err("sending error to xenopsd failed: %d, %s",
                     -end_rc, strerror(-end_rc));
     }
 
@@ -1444,7 +1442,7 @@ int main(int argc, char *argv[])
 {
     int rc;
     struct sigaction sa;
-    char *ident = NULL;
+    char *ident;
 
     parse_args(argc, argv);
 
@@ -1454,26 +1452,26 @@ int main(int argc, char *argv[])
     if (operation_mode == op_invalid)
         return 1;
 
-    asprintf(&ident, "%s-%d", basename(argv[0]), domid);
-    openlog(ident, LOG_PID, LOG_DAEMON);
-    free(ident);
+    if (asprintf(&ident, "%s-%d", basename(argv[0]), domid) > 0)
+        openlog(ident, LOG_PID, LOG_DAEMON);
 
     sa.sa_handler = SIG_IGN;
     sa.sa_flags = 0;
     sigemptyset(&sa.sa_mask);
     if (sigaction(SIGPIPE, &sa, NULL)) {
-        emu_err("Error ignoring SIGPIPE %d, %s", errno, strerror(errno));
+        log_err("Error ignoring SIGPIPE %d, %s", errno, strerror(errno));
         return 1;
     }
 
-    emu_info("Starting...");
-    emu_info("xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
+    log_info("Starting...");
+    log_debug("YYY...");
+    log_info("xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
 
     switch (operation_mode) {
     case op_pvsave:
         rc = argument_add(&emus[0].extra, "pv", "true");
         if (rc) {
-            emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
+            log_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
             return 1;
         }
         /* fall though */
@@ -1482,14 +1480,14 @@ int main(int argc, char *argv[])
     case op_pvrestore:
         rc = argument_add(&emus[0].extra, "pv", "true");
         if (rc) {
-            emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
+            log_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
             return 1;
         }
         /* fall though */
     case op_restore:
         return operation_load() ? 2 : 0;
     default:
-        emu_err("Invalid mode");
+        log_err("Invalid mode");
         return 1;
     }
 }

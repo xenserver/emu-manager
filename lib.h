@@ -2,6 +2,7 @@
 #define LIB_H
 
 #include <stdlib.h>
+#include <stdbool.h>
 
 struct argument {
     struct argument *next;
@@ -20,5 +21,10 @@ int argument_add(struct argument **list, const char *key, const char *value);
 ssize_t strindex(const char * const *table, const char *item);
 
 int close_retry(int fd);
+
+void log_debug_set(bool enabled);
+void log_debug(char *fmt, ...);
+void log_info(char *fmt, ...);
+void log_err(char *fmt, ...);
 
 #endif
