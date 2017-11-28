@@ -144,9 +144,8 @@ int argument_add(struct argument **list, const char *key, const char *value)
         return -errno;
     }
 
-    while (*list) {
+    while (*list)
         list = &(*list)->next;
-    }
     *list = xa;
 
     return 0;

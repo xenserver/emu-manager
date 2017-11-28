@@ -149,7 +149,7 @@ static int process_object(em_client_t *cli, json_object *jobj)
                 log_err("Error from emu: %s", json_object_get_string(jobj));
             else
                 log_err("Unknown error from emu: %s",
-                    json_object_to_json_string(jobj));
+                        json_object_to_json_string(jobj));
             return -EINVAL;
         } else if (!strcmp(key, "event") &&
                    json_object_get_type(val) == json_type_string) {

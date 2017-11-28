@@ -104,8 +104,8 @@ enum command_num {
 };
 
 struct command {
-   char *name;
-   bool needs_fd;
+    char *name;
+    bool needs_fd;
 };
 
 const struct command *command_from_num(enum command_num cmd_num);

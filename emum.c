@@ -1082,7 +1082,7 @@ static int migrate_end(void)
 static int wait_for_event(void)
 {
     int i;
-    int rc, r;
+    int rc;
     fd_set rfds;
     fd_set wfds;
     fd_set xfds;
@@ -1111,43 +1111,43 @@ static int wait_for_event(void)
 
     if (rc > 0) {
         if (FD_ISSET(xenopsd_in, &rfds)) {
-            r = xenopsd_read(0);
-            if (r == 0) {
+            rc = xenopsd_read(0);
+            if (rc == 0) {
                 log_err("Unexpected EOF on xenopsd control fd\n");
                 return -EPIPE;
-            } else if (r < 0) {
-                log_err("xenospd read error: %d, %s\n", -r, strerror(-r));
-                return r;
+            } else if (rc < 0) {
+                log_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
+                return rc;
             }
-            r = xenopsd_process();
-            log_info("control message rc = %d", r);
-            if (r < 0 )
-                return r;
+            rc = xenopsd_process();
+            log_info("control message rc = %d", rc);
+            if (rc < 0)
+                return rc;
         }
 
         for (i = 0; i < num_emus; i++) {
             if (emus[i].enabled && FD_ISSET(emus[i].client->fd, &rfds)) {
-                r = em_client_read(emus[i].client, 0);
-                if (r == 0) {
+                rc = em_client_read(emus[i].client, 0);
+                if (rc == 0) {
                     log_err("Unexpected EOF on emu socket\n");
                     return -EPIPE;
-                } else if (r < 0) {
-                    log_err("emu read error: %d, %s\n", -r, strerror(-r));
-                    return r;
+                } else if (rc < 0) {
+                    log_err("emu read error: %d, %s\n", -rc, strerror(-rc));
+                    return rc;
                 }
-                r = em_client_process(emus[i].client);
-                log_info("em client message rc = %d", r);
-                if (r < 0 )
-                    return r;
+                rc = em_client_process(emus[i].client);
+                log_info("em client message rc = %d", rc);
+                if (rc < 0)
+                    return rc;
             }
         }
 
-        rc = 0;
+        return 0;
     } else if (rc == 0) {
         return -ETIME;
+    } else {
+        return rc;
     }
-
-    return rc;
 }
 
 /* Returns true if @emu is live and has not yet finished. False otherwise. */
