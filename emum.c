@@ -1349,91 +1349,90 @@ static int migrate_abort(void)
     return rc;
 }
 
+/*
+ * Perform the save operation. Reports the final result or an error to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
 static int operation_save(void)
 {
-   int r;
-   int end_r;
+    int rc;
+    int end_rc = 0;
+    bool can_abort = true;
 
-   int can_abort = true;
+    configure_emus();
 
-   configure_emus();
+    rc = startup_emus();
+    if (rc)
+        goto out;
 
-   r = startup_emus();
-   if (r)
-       goto migrate_end;
+    rc = connect_emus();
+    if (rc)
+        goto out;
 
-   r = connect_emus();
-   if (r)
-       goto migrate_end;
+    rc = init_emus();
+    if (rc)
+        goto out;
 
-   r = init_emus();
-   if (r)
-       goto migrate_end;
+    if (gLive) {
+        rc = request_track_emus();
+        if (rc)
+            goto out;
 
+        rc = migrate_live_emus();
+        if (rc)
+            goto out;
 
-   /* Live migrate * * * * * * * */
-   if (gLive) {
+        rc = wait_on_condition(check_live_not_started);
+        if (rc)
+            goto out;
+    }
 
-       r = request_track_emus();
-       if (r)
-           goto migrate_end;
+    can_abort = false;
 
-       r = migrate_live_emus();
-       if (r)
-           goto migrate_end;
+    rc = xenopsd_send_suspend();
+    if (rc)
+        goto out;
 
-       r = wait_on_condition(check_live_not_started);
-       if (r)
-           goto migrate_end;
-   }
+    rc = pause_emus();
+    if (rc)
+        goto out;
 
-   can_abort = false;
+    rc = wait_on_condition(check_live_not_finished);
+    if (rc)
+        goto out;
 
-   emu_info("ask xenopsd to suspend");
-   r = xenopsd_send_suspend();
-   if (r)
-        goto migrate_end;
+    rc = save_nonlive_one_by_one();
+    if (rc)
+        goto out;
 
-   emu_info("should be suspended, send paused to emus");
+    rc = xenopsd_send_final_result();
 
-   r = pause_emus();
-   if (r)
-       goto migrate_end;
+out:
+    if (rc && can_abort) {
+        end_rc = migrate_abort();
+        if (end_rc)
+            emu_err("Error calling migrate_abort(): %d, %s",
+                    -end_rc, strerror(-end_rc));
+    }
 
-   wait_on_condition(check_live_not_finished);
+    if (!end_rc) {
+        end_rc = migrate_end();
+        if (end_rc) {
+            emu_err("Error calling migrate_end(): %d, %s",
+                    -end_rc, strerror(-end_rc));
+            if (!rc)
+                rc = end_rc;
+        }
+    }
 
-   emu_info("send non-live data");
+    if (rc) {
+        end_rc = xenopsd_send_error_result(rc);
+        if (end_rc)
+            emu_err("sending error to xenopsd failed: %d, %s",
+                    -end_rc, strerror(-end_rc));
+    }
 
-   r = save_nonlive_one_by_one();
-
-   emu_info("sending result");
-   xenopsd_send_final_result();
-
-migrate_end:
-   end_r = 0;
-   if (r && can_abort)
-       end_r = migrate_abort();
-
-   if (end_r == 0) {
-       emu_info("ending");
-       end_r = migrate_end();
-   }
-
-   if (r || end_r) {
-       emu_err("Failed!\n");
-
-       if (end_r && !r)
-           r = end_r;
-
-       end_r = xenopsd_send_error_result(r);
-       if (end_r)
-           emu_err("sending error to xenopsd failed: %d, %s",
-                   -end_r, strerror(-end_r));
-
-       return 1;
-   }
-
-   return 0;
+    return rc;
 }
 
 
