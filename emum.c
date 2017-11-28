@@ -1234,63 +1234,73 @@ static void configure_emus(void)
     }
 }
 
+/*
+ * Perform the load operation. Reports the final result or an error to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
 static int operation_load(void)
 {
-   int r;
-   int i;
-   int remaining = 0;
+    int rc, end_rc;
+    int i;
+    int remaining = 0;
 
-   configure_emus();
+    configure_emus();
 
-   r = startup_emus();
-   if (r)
-       goto load_end;
+    rc = startup_emus();
+    if (rc)
+        goto out;
 
-   r = connect_emus();
-   if (r)
-       goto load_end;
+    rc = connect_emus();
+    if (rc)
+        goto out;
 
-   r = init_emus();
-   if (r)
-       goto load_end;
+    rc = init_emus();
+    if (rc)
+        goto out;
 
-   emu_info("Wait for completion");
-   /* Count number of emus we need to wait for. */
-   for (i = 0; i < num_emus; i++) {
-       if (emus[i].enabled)
-           remaining++;
-   }
-   while (remaining) {
-       r = wait_for_event();
-       if (r < 0 && r != -ETIME) {
-           emu_err("Error waiting for events: %d, %s",
-                   -r, strerror(-r));
-           goto load_end;
-       }
+    emu_info("Wait for completion");
+    /* Count number of emus we need to wait for. */
+    for (i = 0; i < num_emus; i++) {
+        if (emus[i].enabled)
+            remaining++;
+    }
+    while (remaining) {
+        rc = wait_for_event();
+        if (rc < 0 && rc != -ETIME) {
+            emu_err("Error waiting for events: %d, %s",
+                    -rc, strerror(-rc));
+            goto out;
+        }
 
-       for (i = 0; i < num_emus; i++) {
-           if (emus[i].status == all_done) {
-               xenopsd_send_result(&emus[i]);
-               emu_info("emu %s complete", emus[i].name);
-               emus[i].status = result_sent;
-               remaining--;
-           }
-       }
-   }
-   r = 0;
+        for (i = 0; i < num_emus; i++) {
+            if (emus[i].status == all_done) {
+                emu_info("emu %s complete", emus[i].name);
+                xenopsd_send_result(&emus[i]);
+                emus[i].status = result_sent;
+                remaining--;
+            }
+        }
+    }
+    rc = 0;
 
-load_end:
-   migrate_end();
+out:
+    end_rc = migrate_end();
+    if (end_rc) {
+        emu_err("Error calling migrate_end(): %d, %s",
+                -end_rc, strerror(-end_rc));
+        if (!rc)
+            rc = end_rc;
+    }
 
-   if (r) {
-       int rc = xenopsd_send_error_result(r);
+    if (rc) {
+        end_rc = xenopsd_send_error_result(rc);
 
-       if (rc)
-           emu_err("sending error to xenopsd failed: %d, %s",
-                   -rc, strerror(-rc));
-   }
+        if (end_rc)
+            emu_err("sending error to xenopsd failed: %d, %s",
+                    -end_rc, strerror(-end_rc));
+    }
 
-   return r;
+    return rc;
 }
 
 /*
