@@ -22,7 +22,7 @@ ssize_t strindex(const char * const *table, const char *item);
 
 int close_retry(int fd);
 
-void log_debug_set(bool enabled);
+void set_debug_log(bool enabled);
 void log_debug(char *fmt, ...);
 void log_info(char *fmt, ...);
 void log_err(char *fmt, ...);

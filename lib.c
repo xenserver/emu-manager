@@ -182,7 +182,7 @@ int close_retry(int fd)
 }
 
 /* Set debug logging to @enabled. */
-void log_debug_set(bool enabled)
+void set_debug_log(bool enabled)
 {
     debug_log = enabled;
 }

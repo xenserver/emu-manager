@@ -497,7 +497,7 @@ static void parse_args(int argc, char *argv[])
             xenopsd_out = parse_int(optarg);
             break;
         case arg_debuglog:
-            log_debug_set(!strcmp(optarg, "true"));
+            set_debug_log(!strcmp(optarg, "true"));
             break;
         case arg_fd:
             emus[0].stream = parse_int(optarg);
