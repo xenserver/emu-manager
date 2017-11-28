@@ -1180,7 +1180,9 @@ static int wait_on_condition(bool (*check)(const struct emu *emu))
                     -rc, strerror(-rc));
             return -rc;
         }
-        update_progress();
+        rc = update_progress();
+        if (rc < 0)
+            return -rc;
     }
 
     return 0;
@@ -1215,7 +1217,9 @@ static int save_nonlive_one_by_one(void)
                 return -rc;
             }
 
-            update_progress();
+            rc = update_progress();
+            if (rc < 0)
+                return -rc;
         }
 
         if (emus[i].stream)
