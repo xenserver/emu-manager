@@ -106,7 +106,7 @@ int send_buf_and_fd(int socket, void *buf, int count, int fd_to_send)
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    *((int *)CMSG_DATA(cmsg)) = fd_to_send;
+    memcpy(CMSG_DATA(cmsg), &fd_to_send, sizeof(fd_to_send));
 
     do {
         rc = sendmsg(socket, &msg, 0);
