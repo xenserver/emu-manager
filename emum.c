@@ -1,25 +1,19 @@
 #define _GNU_SOURCE
-#include <getopt.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <alloca.h>
-#include <stdlib.h>
+#include <getopt.h>
 #include <assert.h>
 
-#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/types.h>
-#include <termios.h>
 #include <signal.h>
-#include "em-client.h"
-#include "lib.h"
 #include <syslog.h>
 
-#define CONTROL_PATH "/var/xen/%s/%d/control"
-
-#include <poll.h>
-#include <stdbool.h>
+#include "lib.h"
+#include "em-client.h"
 
 enum operation_mode {
     op_save,
@@ -30,25 +24,17 @@ enum operation_mode {
     op_invalid,
 };
 
-int gDomid  = 0;
-static bool gLive;
-int gLastUpdateP = -1;
-enum operation_mode gMode = op_invalid;
-
-/* xenopsd data and definitions */
-#define XENOPSD_MSG_SIZE 128      /* maximum size of a message */
-#define RESTORE_MSG "restore:"
-#define ACK_MSG "done"
-
-static int xenopsd_in = -1;
-static int xenopsd_out = -1;
-static bool xenopsd_needs_ack;    /* true if we're expecting an ACK message */
-static char xenopsd_rbuf[XENOPSD_MSG_SIZE];  /* receive buffer */
-static int xenopsd_nbytes;        /* number of bytes of data in xenopsd_rbuf */
-
 enum protocol {
     emp,
     qmp,
+};
+
+enum state {
+    not_done,
+    started,
+    live_done,
+    all_done,
+    result_sent
 };
 
 enum stages {
@@ -61,11 +47,6 @@ enum stages {
     stage_stopcopy
 };
 
-#define XENOPSD_TIMOUT (60 * 2)
-
-#define CMD_START_TIMEOUT 30
-#define CMD_START_RBUF_LEN 128
-
 #define STAGE_ENABLED  (1 << stage_enabled)
 #define STAGE_START    (1 << stage_start)
 #define STAGE_INIT     (1 << stage_init)
@@ -76,14 +57,6 @@ enum stages {
 
 #define FULL_LIVE    STAGE_START | STAGE_INIT | STAGE_LIVE  | STAGE_PAUSE | STAGE_PAUSED
 #define FULL_NONLIVE STAGE_START | STAGE_INIT | STAGE_PAUSE | STAGE_PAUSED | STAGE_STOPCOPY
-
-enum state {
-    not_done=0,
-    started,
-    live_done,
-    all_done,
-    result_sent
-};
 
 struct emu {
     char *name;
@@ -110,6 +83,32 @@ struct emu {
     int iter;
 };
 
+#define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
+#define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
+
+#define CONTROL_PATH "/var/xen/%s/%d/control"
+
+#define XENOPSD_TIMEOUT 120
+#define XENOPSD_MSG_SIZE 128      /* maximum size of a message */
+#define XENOPSD_RESTORE_MSG "restore:"
+#define XENOPSD_ACK_MSG "done"
+
+#define CMD_START_TIMEOUT 30
+#define CMD_START_RBUF_LEN 128
+
+/* xenopsd state */
+static int xenopsd_in = -1;       /* xenopsd read fd */
+static int xenopsd_out = -1;      /* xenopsd write fd */
+static bool xenopsd_needs_ack;    /* true if we're expecting an ACK message */
+static char xenopsd_rbuf[XENOPSD_MSG_SIZE];  /* receive buffer */
+static int xenopsd_nbytes;        /* number of bytes of data in xenopsd_rbuf */
+
+/* manager state */
+static int domid = -1;
+static bool live_migrate;
+static int last_progress = -1;
+static enum operation_mode operation_mode = op_invalid;
+
 char *xenguest_args[] = {
     "/usr/libexec/xen/bin/xenguest",
     "-debug",
@@ -132,27 +131,10 @@ struct emu emus[num_emus] = {
      false,      10,        NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1}
 };
 
-#define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
-#define emu_err(args...) syslog(LOG_DAEMON|LOG_ERR, args)
+/* Forward declarations */
 
 static int restore_emu(struct emu *emu);
-
-/*
- * Return the emu whose name is @name.
- * @return A pointer to the given emu if found, otherwise NULL. The pointer
- * should not be freed.
- */
-static struct emu *find_emu_by_name(const char *name)
-{
-    int i;
-
-    for (i = 0; i < num_emus; i++) {
-        if (!strcmp(emus[i].name, name))
-            return &emus[i];
-    }
-
-    return NULL;
-}
+static struct emu *find_emu_by_name(const char *name);
 
 /* Functions for communicating with xenopsd */
 
@@ -189,17 +171,17 @@ static int xenopsd_process_message(const char *msg)
 {
     emu_info("Processing '%s'", msg);
 
-    if (!strcmp(msg, ACK_MSG)) {
+    if (!strcmp(msg, XENOPSD_ACK_MSG)) {
         if (!xenopsd_needs_ack) {
             emu_err("Unexpected ACK received from xenopsd");
             return -EINVAL;
         }
         xenopsd_needs_ack = false;
         return 0;
-    } else if (!strncmp(msg, RESTORE_MSG, strlen(RESTORE_MSG))) {
+    } else if (!strncmp(msg, XENOPSD_RESTORE_MSG, strlen(XENOPSD_RESTORE_MSG))) {
         struct emu *emu;
 
-        msg += strlen(RESTORE_MSG);
+        msg += strlen(XENOPSD_RESTORE_MSG);
 
         emu = find_emu_by_name(msg);
         if (!emu) {
@@ -303,7 +285,7 @@ static int xenopsd_send_message_with_ack(const char *msg)
      * error occurs.
      */
     do {
-        rc = xenopsd_read(XENOPSD_TIMOUT);
+        rc = xenopsd_read(XENOPSD_TIMEOUT);
         if (rc == 0) {
             emu_err("Unexpected EOF on xenopsd control fd\n");
             return -EPIPE;
@@ -525,11 +507,11 @@ static void parse_args(int argc, char *argv[])
             emus[0].stream = parse_int(optarg);
             break;
         case arg_domid:
-            gDomid = parse_int(optarg);
+            domid = parse_int(optarg);
             break;
         case arg_live:
             if (!strcmp(optarg, "true")) {
-                gLive = true;
+                live_migrate = true;
             } else if (strcmp(optarg, "false")) {
                 emu_err("Unknown live argument: '%s'", optarg);
                 exit(1);
@@ -544,7 +526,7 @@ static void parse_args(int argc, char *argv[])
                 emu_err("Unknown mode '%s'", optarg);
                 exit(1);
             }
-            gMode = idx;
+            operation_mode = idx;
             break;
         case arg_xg_store_port:
         case arg_xg_console_port:
@@ -560,7 +542,7 @@ static void parse_args(int argc, char *argv[])
         case arg_fork: /* ignore */
             break;
         case arg_supports:
-            gMode = op_end;
+            operation_mode = op_end;
             if (strindex(supports_table, optarg) >= 0)
                 printf("true\n");
             else
@@ -579,6 +561,25 @@ static void parse_args(int argc, char *argv[])
     }
 }
 
+/* Functions for emu-manager operation. */
+
+/*
+ * Return the emu whose name is @name.
+ * @return A pointer to the given emu if found, otherwise NULL. The pointer
+ * should not be freed.
+ */
+static struct emu *find_emu_by_name(const char *name)
+{
+    int i;
+
+    for (i = 0; i < num_emus; i++) {
+        if (!strcmp(emus[i].name, name))
+            return &emus[i];
+    }
+
+    return NULL;
+}
+
 /* Given @command, a list of program arguments, substitute all parameterized
  * arguments. This modifies @command.
  * @return 0 on success. -errno on failure.
@@ -587,7 +588,7 @@ static int substitute_args(char **command)
 {
     while (*command) {
         if (!strcmp(*command, "%d")) {
-            if (asprintf(command, "%d", gDomid) < 0)
+            if (asprintf(command, "%d", domid) < 0)
                 return -errno;
         }
         command++;
@@ -715,9 +716,9 @@ static int update_progress(void)
     int rc = 0;
     int progress = calculate_done();
 
-    if (gLastUpdateP != progress) {
+    if (last_progress != progress) {
         rc = xenopsd_send_progress(progress);
-        gLastUpdateP = progress;
+        last_progress = progress;
     }
     return rc ? rc : progress;
 }
@@ -851,7 +852,7 @@ static int connect_emu(struct emu *emu)
     char path[64];
     int rc;
 
-    rc = snprintf(path, sizeof(path), CONTROL_PATH, emu->name, gDomid);
+    rc = snprintf(path, sizeof(path), CONTROL_PATH, emu->name, domid);
     if (rc < 0)
         return -errno;
 
@@ -1239,7 +1240,7 @@ static void configure_emus(void)
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled & STAGE_ENABLED) {
             emu_info("emu %s enabled", emus[i].name);
-            if (!gLive)
+            if (!live_migrate)
                 emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) & ~STAGE_LIVE;
         } else {
             emus[i].enabled = 0;
@@ -1373,7 +1374,7 @@ static int operation_save(void)
     if (rc)
         goto out;
 
-    if (gLive) {
+    if (live_migrate) {
         rc = request_track_emus();
         if (rc)
             goto out;
@@ -1447,13 +1448,13 @@ int main(int argc, char *argv[])
 
     parse_args(argc, argv);
 
-    if (gMode == op_end)
+    if (operation_mode == op_end)
         return 0;
 
-    if (gMode == op_invalid)
+    if (operation_mode == op_invalid)
         return 1;
 
-    asprintf(&ident, "%s-%d", basename(argv[0]), gDomid);
+    asprintf(&ident, "%s-%d", basename(argv[0]), domid);
     openlog(ident, LOG_PID, LOG_DAEMON);
     free(ident);
 
@@ -1468,7 +1469,7 @@ int main(int argc, char *argv[])
     emu_info("Starting...");
     emu_info("xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
 
-    switch (gMode) {
+    switch (operation_mode) {
     case op_pvsave:
         rc = argument_add(&emus[0].extra, "pv", "true");
         if (rc) {

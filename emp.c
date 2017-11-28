@@ -1,4 +1,5 @@
 #include "emp.h"
+
 #include <assert.h>
 
 static struct command commands[] = {

@@ -1,12 +1,13 @@
+#include "lib.h"
+
 #include <stdlib.h>
 #include <string.h>
+
 #include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <poll.h>
-#include <errno.h>
-
-#include "lib.h"
 
 /*
  * Read up to @len bytes into @buf from @fd, waiting for up to @time seconds

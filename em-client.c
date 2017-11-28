@@ -1,19 +1,20 @@
-#include <sys/stat.h>
-#include <fcntl.h>
-
-#include <getopt.h>
-
-#include <stdio.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#include <string.h>
 #include "em-client.h"
-#include "lib.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+
+#include <unistd.h>
 #include <errno.h>
 #include <syslog.h>
-#include <stdbool.h>
-#include <assert.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#include "lib.h"
+
+#define READ_TIMEOUT 30
 
 #define INFO(args...) syslog(LOG_DAEMON|LOG_INFO, args)
 #define ERR(args...) syslog(LOG_DAEMON|LOG_ERR, args)
@@ -299,7 +300,7 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
 
     cli->needs_return = true;
     do {
-        rc = em_client_read(cli, EM_READ_TIMEOUT);
+        rc = em_client_read(cli, READ_TIMEOUT);
         if (rc == 0) {
             ERR("Unexpected EOF on em socket\n");
             return -EPIPE;
