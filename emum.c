@@ -102,7 +102,6 @@ struct emu {
 
     enum state status;
     char* result;
-    int error;
     struct argument *extra;
 
     uint64_t part_sent;
@@ -125,12 +124,12 @@ char *xenguest_args[] = {
 struct emu emus[num_emus] = {
 /*   name,       startup,       waitfor,   waitfor_size, proto, enabled,*/
     {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_ENABLED),
-/*   live_check, exp_total, client, stream, status,   result, error, extra, part_sent, sent, remaining, iter */
-     true,       1000000,   NULL,   0,      not_done, NULL,   0,     NULL,  0,         0,    0,         -1},
+/*   live_check, exp_total, client, stream, status,   result, extra, part_sent, sent, remaining, iter */
+     true,       1000000,   NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1},
     {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,
-     false ,     100000,    NULL,   0,      not_done, NULL,   0,     NULL,  0,         0,    0,         -1},
+     false ,     100000,    NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1},
     {"qemu",     NULL,          NULL,      0,            qmp,   FULL_NONLIVE,
-     false,      10,        NULL,   0,      not_done, NULL,   0,     NULL,  0,         0,    0,         -1}
+     false,      10,        NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1}
 };
 
 #define emu_info(args...) syslog(LOG_DAEMON|LOG_INFO, args)
@@ -730,125 +729,92 @@ static int update_progress(void)
     return rc ? rc : progress;
 }
 
-static int process_status_stats(struct emu *emu, int iter, int sent, int rem)
+/*
+ * Process @event from em client @cli with data given by @data.
+ * Calculate the updated progress and send it to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
+static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
 {
-    int progress;
-    int ready = emu->status == live_done;
+    struct emu *emu = cli->data;
+    int64_t rem = -1;
+    int64_t sent = -1;
+    int iter = -1;
 
-    /* remaining can be wrong - fix it up if it is. */
-    if (iter == 0 && rem == 0)
-        rem = -1;
-
-    if (rem != -1) {
-        emu->remaining = rem;
-        emu->sent = sent;
-        emu->iter = iter;
+    if (strcmp(event, "MIGRATION")) {
+        emu_err("Unknown event type: %s", event);
+        return -EINVAL;
     }
-    emu->part_sent = sent;
 
-    progress = update_progress();
-    if (progress < 0)
-        return progress;
+    json_object_object_foreach(data, key, val) {
+        if (!strcmp(key, "status")) {
+            if (json_object_get_type(val) == json_type_string) {
+                const char *status = json_object_get_string(val);
 
-    emu_info("for %s:rem %d, iter %d, send %d %s.  Tot=%d",
-             emu->name, rem, iter, sent, ready ? " Waiting" : "", progress);
-    if ((iter > 0) && (rem < 50 || iter >= 4) && !ready) {
-        emu_info("criteria met - signal ready");
-        emu->status = live_done;
+                if (strcmp(status, "completed")) {
+                    emu_info("Error: emu %s status: %s", emu->name, status);
+                    return -EINVAL;
+                }
+                emu->status = all_done;
+            } else {
+                emu_err("Unexpected event data");
+                return -EINVAL;
+            }
+        } else if (!strcmp(key, "result")) {
+            if (json_object_get_type(val) == json_type_string) {
+                emu->result = strdup(json_object_get_string(val));
+                if (!emu->result)
+                    return -ENOMEM;
+            } else {
+                emu_err("Unexpected event data");
+                return -EINVAL;
+            }
+        }  else if (json_object_get_type(val) == json_type_int) {
+            if (!strcmp(key, "remaining")) {
+                rem = json_object_get_int64(val);
+            } else if (!strcmp(key, "sent")) {
+                sent = json_object_get_int64(val);
+            } else if (!strcmp(key, "iteration")) {
+                iter = json_object_get_int(val);
+            } else {
+                emu_err("Unexpected event data");
+                return -EINVAL;
+            }
+        } else {
+            emu_err("Unexpected event data");
+            return -EINVAL;
+        }
+    }
+
+    if (rem >=0 || iter >= 0) {
+        int progress;
+        bool ready = emu->status == live_done;
+
+        /* remaining can be wrong - fix it up if it is. */
+        if (rem == 0 && iter == 0)
+            rem = -1;
+
+        if (rem != -1) {
+            emu->remaining = rem;
+            emu->sent = sent;
+            emu->iter = iter;
+        }
+        emu->part_sent = sent;
+
+        progress = update_progress();
+        if (progress < 0)
+            return progress;
+
+        emu_info("Event for %s: rem %"PRId64", sent %"PRId64", iter %d, %s. Progress = %d",
+                 emu->name, rem, sent, iter,
+                 ready ? " waiting" : " not waiting", progress);
+        if ((iter > 0) && (rem < 50 || iter >= 4) && !ready) {
+            emu_info("emu %s: live done", emu->name);
+            emu->status = live_done;
+        }
     }
 
     return 0;
-}
-
-/* where events are parsed */
-static int emu_event_cb(json_object *jobj, em_client_t* cli)
-{
-   struct emu* emu = (struct emu*) cli->data;
-   int r;
-
-   json_object *event=NULL;
-   json_object *data=NULL;
-
-   json_object_object_foreach(jobj, key, val) {
-      if (strcmp(key, "data") == 0) {
-         r = json_object_get_type(val);
-         if (r == json_type_object)
-             data=val;
-         else
-             emu_err("Data must be of type object - got %d", r);
-      }
-      if (strcmp(key, "event") == 0) {
-         r = json_object_get_type(val);
-         if (r == json_type_string)
-             event=val;
-         else
-             emu_err("Events must be of type string - got %d", r);
-      }
-   }
-
-   if (event && data) {
-        const char* ev_str=NULL;
-        ev_str= json_object_get_string(event);
-
-        if (strcmp(ev_str,"MIGRATION")==0) {
-           int rem = -1;
-           int iter = -1;
-           int sent = -1;
-
-           json_object_object_foreach(data, key, val) {
-             if (strcmp(key, "status")==0) {
-                  if (json_object_get_type(val) == json_type_string) {
-                      const char * res = json_object_get_string(val);
-
-                      if (strcmp(res, "completed") != 0) {
-                            emu->error = 1;
-                            emu_info("emu %s status %s!", emu->name, res);
-                      } else
-                            emu_info("emu %s status Finished!", emu->name);
-                      emu->status = all_done;
-                  } else {
-                      emu_err("expected string for status");
-                  }
-             } else if (strcmp(key, "result")==0) {
-                  if (json_object_get_type(val) == json_type_string) {
-                      const char * res = json_object_get_string(val);
-                      emu->result = strdup(res);
-                      if (emu->result == NULL)
-                         emu_err("Failed to alloc result");
-                  } else {
-                      emu_err("expected string for result");
-                  }
-
-             }  else if (json_object_get_type(val) == json_type_int) {
-               int v = json_object_get_int(val);
-
-               if (strcmp(key, "remaining")==0) {
-                   rem = v;
-               } else if (strcmp(key, "iteration")==0) {
-                    iter = v;
-               }
-               else if (strcmp(key, "sent")==0) { 
-                    sent = v;
-               } else {
-                   emu_info("With %s, sent unexpected %s of value %d", emu->name, key, v);
-               };
-             } else
-                   emu_info("Unexpected magrtion data %s", key);
-             } // for
-             if (rem >=0 || iter >= 0) {
-                 process_status_stats(emu, iter, sent, rem);
-             }
-
-        } else
-        {
-         emu_info("With %s, Unkown event type '%s'. Ignoring.", emu->name, ev_str);
-        }
-   } else {
-      emu_err("Called on something not an event");
-   }
-
-
-   return 0;
 }
 
 /*
@@ -1312,11 +1278,6 @@ static int operation_load(void)
 
        for (i = 0; i < num_emus; i++) {
            if (emus[i].status == all_done) {
-               if (emus[i].error) {
-                   r = -1;
-                   emu_err("EMU failed.");
-                   goto load_end;
-               }
                xenopsd_send_result(&emus[i]);
                emu_info("emu %s complete", emus[i].name);
                emus[i].status = result_sent;

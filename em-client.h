@@ -4,7 +4,8 @@
 
 typedef struct em_client em_client_t;
 
-typedef int (*em_client_event_cb)(json_object *, em_client_t *);
+typedef int (*em_client_event_cb)(em_client_t *cli, const char *event,
+                                  json_object *data);
 
 #define EM_CLIENT_BUF_SIZE 1024
 #define EM_READ_TIMEOUT 30

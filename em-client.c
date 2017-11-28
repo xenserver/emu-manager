@@ -136,15 +136,15 @@ int em_client_read(em_client_t *cli, int timeout)
 static int process_object(em_client_t *cli, json_object *jobj)
 {
     json_type type;
-    int rc = 0;
+    json_object *event = NULL;
+    json_object *data = NULL;
 
     assert(jobj);
 
     type = json_object_get_type(jobj);
     if (type != json_type_object) {
         ERR("Expected JSON object, but got %d", type);
-        rc = -EINVAL;
-        goto out;
+        return -EINVAL;
     }
 
     json_object_object_foreach(jobj, key, val) {
@@ -156,27 +156,31 @@ static int process_object(em_client_t *cli, json_object *jobj)
             else
                 ERR("Unknown error from emu: %s",
                     json_object_to_json_string(jobj));
-            rc = -EINVAL;
-            break;
+            return -EINVAL;
         } else if (!strcmp(key, "event") &&
                    json_object_get_type(val) == json_type_string) {
-            if (cli->event_cb) {
-                rc = cli->event_cb(jobj, cli);
-                if (rc)
-                    break;
-            }
-        } else if (!strcmp(key, "data")) {
-            /* Ignore */
+            event = val;
+        } else if (!strcmp(key, "data") &&
+                   json_object_get_type(val) == json_type_object) {
+            data = val;
         } else {
             ERR("Unexpected key %s\n", key);
-            rc = -EINVAL;
-            break;
+            return -EINVAL;
         }
     }
 
-out:
-    json_object_put(jobj);
-    return rc;
+    if (event && data) {
+        if (cli->event_cb)
+            return cli->event_cb(cli, json_object_get_string(event), data);
+    } else if (event && !data) {
+        ERR("Event without data");
+        return -EINVAL;
+    } else if (!event && data) {
+        ERR("Data without event");
+        return -EINVAL;
+    }
+
+    return 0;
 }
 
 /*
@@ -211,6 +215,7 @@ int em_client_process(em_client_t *cli)
         }
 
         rc = process_object(cli, jobj);
+        json_object_put(jobj);
         cli->nbytes -= cli->tok->char_offset;
         ptr += cli->tok->char_offset;
         if (rc < 0)
