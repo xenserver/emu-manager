@@ -449,12 +449,12 @@ static void parse_dm_arg(char *arg)
 
     if (param) {
         switch (emu->proto) {
-            case emp:
-                emu->stream = parse_int(param);
-                break;
-            case qmp:
-                abort();
-                break;
+        case emp:
+            emu->stream = parse_int(param);
+            break;
+        case qmp:
+            abort();
+            break;
         }
     }
 }
@@ -522,62 +522,62 @@ static void parse_args(int argc, char *argv[])
         emu_info("c=%d, arg_index=%d, optarg=%s", c, arg_index, optarg);
 
         switch (c) {
-            case arg_controlinfd:
-                xenopsd_in = parse_int(optarg);
-                break;
-            case arg_controloutfd:
-                xenopsd_out = parse_int(optarg);
-                break;
-            case arg_debuglog:
-                break;
-            case arg_fd:
-                emus[0].stream = parse_int(optarg);
-                break;
-            case arg_domid:
-                gDomid = parse_int(optarg);
-                break;
-            case arg_live:
-                if (!strcmp(optarg, "true")) {
-                    gLive = true;
-                } else if (strcmp(optarg, "false")) {
-                    emu_err("Unknown live argument: '%s'", optarg);
-                    exit(1);
-                }
-                break;
-            case arg_dm:
-                parse_dm_arg(optarg);
-                break;
-            case arg_mode:
-                gMode = str_lookup(mode_names, optarg);
-                if (gMode < 0) {
-                    emu_err("Unknown mode '%s'", optarg);
-                    exit(1);
-                }
-                break;
-            case arg_xg_store_port:
-            case arg_xg_console_port:
-                emu_info("adding xenguest special option %s = %s",
-                         args[arg_index].name, optarg);
-                rc = argument_add(&emus[0].extra, args[arg_index].name, optarg);
-                if (rc) {
-                    emu_err("Error adding xenguest argument: %d, %s",
-                            -rc, strerror(-rc));
-                    exit(1);
-                }
-                break;
-            case arg_fork: /* ignore */
-                break;
-            case arg_supports:
-                gMode = op_end;
-                if (str_lookup(supports_table, optarg) >= 0)
-                    printf("true\n");
-                else
-                    printf("false\n");
-                break;
-            default:
-                emu_err("Error parsing arguments");
+        case arg_controlinfd:
+            xenopsd_in = parse_int(optarg);
+            break;
+        case arg_controloutfd:
+            xenopsd_out = parse_int(optarg);
+            break;
+        case arg_debuglog:
+            break;
+        case arg_fd:
+            emus[0].stream = parse_int(optarg);
+            break;
+        case arg_domid:
+            gDomid = parse_int(optarg);
+            break;
+        case arg_live:
+            if (!strcmp(optarg, "true")) {
+                gLive = true;
+            } else if (strcmp(optarg, "false")) {
+                emu_err("Unknown live argument: '%s'", optarg);
                 exit(1);
-                break;
+            }
+            break;
+        case arg_dm:
+            parse_dm_arg(optarg);
+            break;
+        case arg_mode:
+            gMode = str_lookup(mode_names, optarg);
+            if (gMode < 0) {
+                emu_err("Unknown mode '%s'", optarg);
+                exit(1);
+            }
+            break;
+        case arg_xg_store_port:
+        case arg_xg_console_port:
+            emu_info("adding xenguest special option %s = %s",
+                     args[arg_index].name, optarg);
+            rc = argument_add(&emus[0].extra, args[arg_index].name, optarg);
+            if (rc) {
+                emu_err("Error adding xenguest argument: %d, %s",
+                        -rc, strerror(-rc));
+                exit(1);
+            }
+            break;
+        case arg_fork: /* ignore */
+            break;
+        case arg_supports:
+            gMode = op_end;
+            if (str_lookup(supports_table, optarg) >= 0)
+                printf("true\n");
+            else
+                printf("false\n");
+            break;
+        default:
+            emu_err("Error parsing arguments");
+            exit(1);
+            break;
         }
     }
 
@@ -593,15 +593,15 @@ static void parse_args(int argc, char *argv[])
  */
 static int substitute_args(char **command)
 {
-   while (*command) {
-       if (!strcmp(*command, "%d")) {
-           if (asprintf(command, "%d", gDomid) < 0)
-               return -errno;
-       }
-       command++;
-   }
+    while (*command) {
+        if (!strcmp(*command, "%d")) {
+            if (asprintf(command, "%d", gDomid) < 0)
+                return -errno;
+        }
+        command++;
+    }
 
-   return 0;
+    return 0;
 }
 
 /* This prevents stdout being buffered */
@@ -786,7 +786,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
         }
     }
 
-    if (rem >=0 || iter >= 0) {
+    if (rem >= 0 || iter >= 0) {
         int progress;
         bool ready = emu->status == live_done;
 
@@ -885,16 +885,16 @@ static int connect_emus(void)
             continue;
 
         switch (emu->proto) {
-            case emp:
-                if ((rc = connect_emu(emu))) {
-                    emu_err("Failed to connect to %s: %d, %s",
-                            emu->name, -rc, strerror(-rc));
-                    return rc;
-                }
-                break;
-            case qmp:
-                abort();
-                break;
+        case emp:
+            if ((rc = connect_emu(emu))) {
+                emu_err("Failed to connect to %s: %d, %s",
+                        emu->name, -rc, strerror(-rc));
+                return rc;
+            }
+            break;
+        case qmp:
+            abort();
+            break;
         }
     }
     return 0;
@@ -916,23 +916,23 @@ static int init_emus(void)
             continue;
 
         switch (emu->proto) {
-            case emp:
-                rc = em_client_send_cmd_fd(emu->client, cmd_migrate_init,
-                                           emu->stream);
+        case emp:
+            rc = em_client_send_cmd_fd(emu->client, cmd_migrate_init,
+                                       emu->stream);
+            if (rc)
+                return rc;
+
+            if (emu->extra) {
+                rc = em_client_send_cmd_args(emu->client, cmd_set_args,
+                                             emu->extra);
                 if (rc)
                     return rc;
+            }
 
-                if (emu->extra) {
-                    rc = em_client_send_cmd_args(emu->client, cmd_set_args,
-                                                 emu->extra);
-                    if (rc)
-                        return rc;
-                }
-
-                break;
-            case qmp:
-                abort();
-                break;
+            break;
+        case qmp:
+            abort();
+            break;
         }
     }
     return 0;
@@ -954,19 +954,19 @@ static int request_track_emus(void)
             continue;
 
         switch (emu->proto) {
-            case emp:
-                rc = em_client_send_cmd(emu->client, cmd_track_dirty);
-                if (rc)
-                    return rc;
+        case emp:
+            rc = em_client_send_cmd(emu->client, cmd_track_dirty);
+            if (rc)
+                return rc;
 
-                rc = em_client_send_cmd(emu->client, cmd_migrate_progress);
-                if (rc)
-                    return rc;
+            rc = em_client_send_cmd(emu->client, cmd_migrate_progress);
+            if (rc)
+                return rc;
 
-                break;
-            case qmp:
-                abort();
-                break;
+            break;
+        case qmp:
+            abort();
+            break;
         }
     }
     return 0;
