@@ -1454,9 +1454,6 @@ int main(int argc, char *argv[])
     if (operation_mode == op_end)
         return 0;
 
-    if (operation_mode == op_invalid)
-        return 1;
-
     if (asprintf(&ident, "%s-%d", basename(argv[0]), domid) > 0)
         openlog(ident, LOG_PID, LOG_DAEMON);
 
@@ -1465,6 +1462,19 @@ int main(int argc, char *argv[])
     sigemptyset(&sa.sa_mask);
     if (sigaction(SIGPIPE, &sa, NULL)) {
         log_err("Error ignoring SIGPIPE %d, %s", errno, strerror(errno));
+        return 1;
+    }
+
+    if (operation_mode == op_invalid) {
+        log_err("Operation mode not set!");
+        return 1;
+    }
+    if (xenopsd_in == -1 || xenopsd_out == -1) {
+        log_err("Control fd(s) not set!");
+        return 1;
+    }
+    if (domid == -1) {
+        log_err("domid not set!");
         return 1;
     }
 
