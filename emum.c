@@ -22,12 +22,12 @@
 #include <stdbool.h>
 
 enum operation_mode {
-   op_invalid = -1,
-   op_save    = 0,
-   op_pvsave,
-   op_restore,
-   op_pvrestore,
-   op_end
+    op_save,
+    op_pvsave,
+    op_restore,
+    op_pvrestore,
+    op_end,
+    op_invalid,
 };
 
 int gDomid  = 0;
@@ -501,6 +501,7 @@ static void parse_args(int argc, char *argv[])
     };
 
     int c, rc;
+    ssize_t idx;
 
     for(;;) {
         int arg_index = 0;
@@ -538,11 +539,12 @@ static void parse_args(int argc, char *argv[])
             parse_dm_arg(optarg);
             break;
         case arg_mode:
-            gMode = strindex(mode_names, optarg);
-            if (gMode < 0) {
+            idx = strindex(mode_names, optarg);
+            if (idx < 0) {
                 emu_err("Unknown mode '%s'", optarg);
                 exit(1);
             }
+            gMode = idx;
             break;
         case arg_xg_store_port:
         case arg_xg_console_port:
