@@ -595,12 +595,15 @@ static int substitute_args(char **command)
     return 0;
 }
 
-/* This prevents stdout being buffered */
+/*
+ * This prevents stdout being buffered for a child process. This is a hack.
+ * Remove this code when xenguest is fixed to avoid buffering its output.
+ */
 static int setenv_nobuffs(void)
 {
     clearenv();
-    if ((putenv("LD_PRELOAD=/usr/libexec/coreutils/libstdbuf.so")!=0) ||
-        (putenv ("_STDBUF_O=0") != 0)) {
+    if ((putenv("LD_PRELOAD=/usr/libexec/coreutils/libstdbuf.so") != 0) ||
+            (putenv ("_STDBUF_O=0") != 0)) {
         log_err("Failed to putenv\n");
         return -1;
     }
