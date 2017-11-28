@@ -1435,25 +1435,27 @@ out:
     return rc;
 }
 
-
-
+/*
+ * Exits with code 0 on success, 1 if an error occurs during argument parsing
+ * or emu-manager initialization, 2 if an error occurs during operation.
+ */
 int main(int argc, char *argv[])
 {
-   int rc;
-   char *ident;
-   struct sigaction sa;
+    int rc;
+    struct sigaction sa;
+    char *ident = NULL;
 
-   parse_args(argc, argv);
+    parse_args(argc, argv);
 
-   if (gMode == op_end)
-      return 0;
+    if (gMode == op_end)
+        return 0;
 
-   if (gMode == op_invalid)
-      return 1;
+    if (gMode == op_invalid)
+        return 1;
 
-    rc = asprintf(&ident, "%s-%d", basename(argv[0]), gDomid);
-    if (rc > 0)
-        openlog(ident, LOG_PID, LOG_DAEMON);
+    asprintf(&ident, "%s-%d", basename(argv[0]), gDomid);
+    openlog(ident, LOG_PID, LOG_DAEMON);
+    free(ident);
 
     sa.sa_handler = SIG_IGN;
     sa.sa_flags = 0;
@@ -1463,33 +1465,30 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-   emu_info("starting ... ");
+    emu_info("Starting...");
+    emu_info("xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
 
-   emu_info("xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
-
-   switch (gMode) {
-   case op_pvsave:
-       rc = argument_add(&emus[0].extra, "pv", "true");
-       if (rc) {
-           emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
-           return 1;
-       }
-       /* fall though */
-   case op_save:
-      setvbuf(stdout, NULL, _IONBF, 0);
-      return operation_save();
-   case op_pvrestore:
-      rc = argument_add(&emus[0].extra, "pv", "true");
-      if (rc) {
-          emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
-          return 1;
-      }
-      /* fall though */
-   case op_restore:
-      return operation_load();
-   default:
-      emu_err("Invalid mode");
-      return 1;
-   }
-
+    switch (gMode) {
+    case op_pvsave:
+        rc = argument_add(&emus[0].extra, "pv", "true");
+        if (rc) {
+            emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
+            return 1;
+        }
+        /* fall though */
+    case op_save:
+        return operation_save() ? 2 : 0;
+    case op_pvrestore:
+        rc = argument_add(&emus[0].extra, "pv", "true");
+        if (rc) {
+            emu_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
+            return 1;
+        }
+        /* fall though */
+    case op_restore:
+        return operation_load() ? 2 : 0;
+    default:
+        emu_err("Invalid mode");
+        return 1;
+    }
 }
