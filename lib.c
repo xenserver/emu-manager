@@ -195,8 +195,10 @@ void log_debug(char *fmt, ...)
 {
     va_list ap;
 
+#ifndef DEBUG_LOGGING
     if (!debug_log)
         return;
+#endif
 
     va_start(ap, fmt);
     vsyslog(LOG_DEBUG, fmt, ap);

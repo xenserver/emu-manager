@@ -9,13 +9,13 @@ OBJS := \
 CFLAGS  = -I$(shell pwd)
 
 ifeq ($(D), 1)
-CFLAGS += -g
+CFLAGS += -g -O0 -DDEBUG_LOGGING
 else
-CFLAGS += -g -O1
+CFLAGS += -g -O2
 endif
 
-# _GNU_SOURCE for asprintf.
-CFLAGS += -Wall \
+CFLAGS += -D_GNU_SOURCE \
+          -Wall \
           -Werror \
           -Wextra \
           -Wstrict-prototypes \
@@ -30,7 +30,7 @@ CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d
 
 DEPS     = .*.d
 
-LDFLAGS += -g 
+LDFLAGS += -g
 
 all: $(TARGET)
 
