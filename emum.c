@@ -1294,29 +1294,36 @@ load_end:
 }
 
 /*
- * Tell all emus to abort.
+ * Tell all emus to abort. This will not return immediately if an error is
+ * received. Instead, it will send tell all the emus to abort and return the
+ * first error code.
  * @return 0 on success. -errno on failure.
  */
 static int migrate_abort(void)
 {
     int i;
-    int r;
-    emu_info("attempting to abort");
+    int rc = 0;
+    int ret;
 
-    for (i=0; i < num_emus; i++) {
+    emu_info("Tell all emus to abort");
+
+    for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled) {
             switch (emus[i].proto) {
             case emp:
-                r = em_client_send_cmd(emus[i].client, cmd_migrate_abort);
-                if (r)
-                    return r;
-            break;
+                if (emus[i].client && emus[i].client->fd >= 0) {
+                    ret = em_client_send_cmd(emus[i].client, cmd_migrate_abort);
+                    if (ret && !rc)
+                        rc = ret;
+                }
             case qmp:
-            break;
+                abort();
+                break;
             }
         }
     }
-    return 0;
+
+    return rc;
 }
 
 static int operation_save(void)
