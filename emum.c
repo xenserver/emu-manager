@@ -33,7 +33,7 @@ enum operation_mode {
 int gDomid  = 0;
 static bool gLive;
 int gLastUpdateP = -1;
-enum operation_mode gMode=op_invalid;
+enum operation_mode gMode = op_invalid;
 
 /* xenopsd data and definitions */
 #define XENOPSD_MSG_SIZE 128      /* maximum size of a message */
@@ -47,18 +47,18 @@ static char xenopsd_rbuf[XENOPSD_MSG_SIZE];  /* receive buffer */
 static int xenopsd_nbytes;        /* number of bytes of data in xenopsd_rbuf */
 
 enum protocol {
-emp,
-qmp
+    emp,
+    qmp,
 };
 
 enum stages {
-stage_enabled,
-stage_start,
-stage_init,
-stage_live,
-stage_pause,
-stage_paused,
-stage_stopcopy
+    stage_enabled,
+    stage_start,
+    stage_init,
+    stage_live,
+    stage_pause,
+    stage_paused,
+    stage_stopcopy
 };
 
 #define XENOPSD_TIMOUT (60 * 2)
@@ -97,11 +97,11 @@ struct emu {
 
     int exp_total;
 
-    em_client_t* client;
+    em_client_t *client;
     int stream;
 
     enum state status;
-    char* result;
+    char *result;
     struct argument *extra;
 
     uint64_t part_sent;
@@ -1049,28 +1049,28 @@ static int pause_emus(void)
  */
 static int migrate_end(void)
 {
-   int i;
-   int ret;
-   int rc = 0;
+    int i;
+    int ret;
+    int rc = 0;
 
-   for (i=0; i< num_emus; i++) {
-      if (emus[i].client) {
-         if (emus[i].client->fd >= 0 && emus[i].startup) {
-             ret = em_client_send_cmd(emus[i].client, cmd_quit);
-             if (ret && !rc)
-                 rc = ret;
-         }
-         ret = em_client_free(emus[i].client);
-         if (ret && !rc)
-             rc = ret;
-      }
-      if (emus[i].stream) {
-          ret = close_retry(emus[i].stream);
-         if (ret && !rc)
-             rc = ret;
-      }
-   }
-   return rc;
+    for (i = 0; i < num_emus; i++) {
+        if (emus[i].client) {
+            if (emus[i].client->fd >= 0 && emus[i].startup) {
+                ret = em_client_send_cmd(emus[i].client, cmd_quit);
+                if (ret && !rc)
+                    rc = ret;
+            }
+            ret = em_client_free(emus[i].client);
+            if (ret && !rc)
+                rc = ret;
+        }
+        if (emus[i].stream) {
+            ret = close_retry(emus[i].stream);
+            if (ret && !rc)
+                rc = ret;
+        }
+    }
+    return rc;
 }
 
 /*
