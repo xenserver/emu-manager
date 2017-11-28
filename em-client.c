@@ -27,13 +27,10 @@ int em_client_alloc(em_client_t **cli, em_client_event_cb event_cb,
     assert(!*cli);
 
     c = malloc(sizeof(em_client_t));
-    if (!c) {
-        log_err("Failed to allocate em_client_t");
+    if (!c)
         return -ENOMEM;
-    }
     c->tok = json_tokener_new();
     if (!c->tok) {
-        log_err("Failed to allocate JSON tokener");
         free(c);
         return -ENOMEM;
     }
@@ -77,7 +74,8 @@ int em_client_connect(em_client_t *cli, const char *path)
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         int saved_errno = errno;
-        log_err("socket()");
+        log_err("em-client: Error creating socket: %d, %s",
+                errno, strerror(errno));
         return -saved_errno;
     }
 
@@ -85,12 +83,13 @@ int em_client_connect(em_client_t *cli, const char *path)
     addr.sun_family = AF_UNIX;
     strcpy(addr.sun_path, path);
 
-    log_info(" connect to '%s'", addr.sun_path);
+    log_info("em-client: connect to %s", addr.sun_path);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
     {
         int saved_errno = errno;
-        log_err("connect()");
+        log_err("em-client: Error connecting to socket: %d, %s",
+                errno, strerror(errno));
         close_retry(fd);
         return -saved_errno;
     }
@@ -137,18 +136,22 @@ static int process_object(em_client_t *cli, json_object *jobj)
 
     type = json_object_get_type(jobj);
     if (type != json_type_object) {
-        log_err("Expected JSON object, but got %d", type);
+        log_err("em-client: Expected JSON object but got type %d", type);
         return -EINVAL;
     }
 
     json_object_object_foreach(jobj, key, val) {
         if (!strcmp(key, "return")) {
+            if (!cli->needs_return) {
+                log_err("em-client: Unexpected return from em-client");
+                return -EINVAL;
+            }
             cli->needs_return = false;
         } else if (!strcmp(key, "error")) {
             if (json_object_is_type(val, json_type_string))
-                log_err("Error from emu: %s", json_object_get_string(jobj));
+                log_err("Error from em-client: %s", json_object_get_string(jobj));
             else
-                log_err("Unknown error from emu: %s",
+                log_err("Unknown error from em-client: %s",
                         json_object_to_json_string(jobj));
             return -EINVAL;
         } else if (!strcmp(key, "event") &&
@@ -158,7 +161,7 @@ static int process_object(em_client_t *cli, json_object *jobj)
                    json_object_get_type(val) == json_type_object) {
             data = val;
         } else {
-            log_err("Unexpected key %s\n", key);
+            log_err("em-client sent unexpected key %s\n", key);
             return -EINVAL;
         }
     }
@@ -167,10 +170,10 @@ static int process_object(em_client_t *cli, json_object *jobj)
         if (cli->event_cb)
             return cli->event_cb(cli, json_object_get_string(event), data);
     } else if (event && !data) {
-        log_err("Event without data");
+        log_err("em-client sent event without data");
         return -EINVAL;
     } else if (!event && data) {
-        log_err("Data without event");
+        log_err("em-client sent data without event");
         return -EINVAL;
     }
 
@@ -189,8 +192,8 @@ int em_client_process(em_client_t *cli)
     int processed = 0;
     int rc = 0;
 
-    log_info("Process em_client_t read buffer: '%.*s'",
-             cli->nbytes, cli->buf);
+    log_debug("Process em_client_t read buffer: '%.*s'",
+              cli->nbytes, cli->buf);
 
     ptr = cli->buf;
     while (cli->nbytes) {
@@ -237,7 +240,7 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
     assert(cli);
     assert(!cmd->needs_fd || fd >= 0);
 
-    log_info("sending %s", cmd->name);
+    log_debug("Sending command '%s' to em client", cmd->name);
 
     if (arg) {
         char *ptr = buf;
@@ -279,22 +282,27 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
             return -EMSGSIZE;
     }
 
+    log_debug("Sending message '%s' to em-client", buf);
+
     if (cmd->needs_fd)
         rc = send_buf_and_fd(cli->fd, buf, strlen(buf), fd);
     else
         rc = write_all(cli->fd, buf, strlen(buf));
 
-    if (rc)
+    if (rc) {
+        log_err("Error sending message to em-client: %d, %s",
+                -rc, strerror(-rc));
         return rc;
+    }
 
     cli->needs_return = true;
     do {
         rc = em_client_read(cli, READ_TIMEOUT);
         if (rc == 0) {
-            log_err("Unexpected EOF on em socket\n");
+            log_err("em-client: EOF on socket\n");
             return -EPIPE;
         } else if (rc < 0) {
-            log_err("emu read error: %d, %s\n", -rc, strerror(-rc));
+            log_err("em-client read error: %d, %s\n", -rc, strerror(-rc));
             return rc;
         }
 

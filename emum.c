@@ -24,6 +24,15 @@ enum operation_mode {
     op_invalid,
 };
 
+/* These mode names correspond with enum operation_mode. */
+static const char *mode_names[] = {
+    "hvm_save",
+    "save",
+    "hvm_restore",
+    "restore",
+    NULL
+};
+
 enum protocol {
     emp,
     qmp,
@@ -166,7 +175,7 @@ static int xenopsd_read(int timeout)
  */
 static int xenopsd_process_message(const char *msg)
 {
-    log_info("Processing '%s'", msg);
+    log_debug("xenopsd: Processing '%s'", msg);
 
     if (!strcmp(msg, XENOPSD_ACK_MSG)) {
         if (!xenopsd_needs_ack) {
@@ -182,7 +191,7 @@ static int xenopsd_process_message(const char *msg)
 
         emu = find_emu_by_name(msg);
         if (!emu) {
-            log_err("Did do not know '%s'", msg);
+            log_err("xenopsd: Restore for unknown emu '%s'", msg);
             return -EINVAL;
         }
 
@@ -203,8 +212,8 @@ static int xenopsd_process(void)
     int rc = 0;
     char *ptr, *endl;
 
-    log_info("Process xenopsd read buffer: '%.*s'",
-             xenopsd_nbytes, xenopsd_rbuf);
+    log_debug("xenopsd: Process read buffer: '%.*s'",
+              xenopsd_nbytes, xenopsd_rbuf);
 
     ptr = xenopsd_rbuf;
     while (xenopsd_nbytes) {
@@ -237,11 +246,11 @@ static int xenopsd_send_message(const char *msg)
 {
     int rc;
 
-    log_info("Send '%s' to xenopsd", msg);
+    log_debug("xenopsd: Send '%s'", msg);
 
     rc = write_all(xenopsd_out, msg, strlen(msg));
     if (rc)
-        log_err("Failed to write to xenopsd %d, %s", -rc, strerror(-rc));
+        log_err("Failed to write to xenopsd: %d, %s", -rc, strerror(-rc));
 
     return rc;
 }
@@ -284,7 +293,7 @@ static int xenopsd_send_message_with_ack(const char *msg)
     do {
         rc = xenopsd_read(XENOPSD_TIMEOUT);
         if (rc == 0) {
-            log_err("Unexpected EOF on xenopsd control fd\n");
+            log_err("xenopsd: EOF on control fd\n");
             return -EPIPE;
         } else if (rc < 0) {
             log_err("xenopsd read error: %d, %s\n", -rc, strerror(-rc));
@@ -465,15 +474,6 @@ static void parse_args(int argc, char *argv[])
         {NULL},
     };
 
-    /* These mode names correspond with enum operation_mode. */
-    static const char *mode_names[] = {
-        "hvm_save",
-        "save",
-        "hvm_restore",
-        "restore",
-        NULL
-    };
-
     static const char *supports_table[] = {
         "migration-v2",
         NULL
@@ -488,8 +488,6 @@ static void parse_args(int argc, char *argv[])
         c = getopt_long_only(argc, argv, "", args, &arg_index);
         if (c == -1)
             break;
-
-        log_info("c=%d, arg_index=%d, optarg=%s", c, arg_index, optarg);
 
         switch (c) {
         case arg_controlinfd:
@@ -528,8 +526,6 @@ static void parse_args(int argc, char *argv[])
             break;
         case arg_xg_store_port:
         case arg_xg_console_port:
-            log_info("adding xenguest special option %s = %s",
-                     args[arg_index].name, optarg);
             rc = argument_add(&emus[0].extra, args[arg_index].name, optarg);
             if (rc) {
                 log_err("Error adding xenguest argument: %d, %s",
@@ -736,6 +732,8 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
     int64_t sent = -1;
     int iter = -1;
 
+    log_debug("Processing event from em-client");
+
     if (strcmp(event, "MIGRATION")) {
         log_err("Unknown event type: %s", event);
         return -EINVAL;
@@ -747,12 +745,13 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
                 const char *status = json_object_get_string(val);
 
                 if (strcmp(status, "completed")) {
-                    log_info("Error: emu %s status: %s", emu->name, status);
+                    log_err("Error: emu %s status: %s", emu->name, status);
                     return -EINVAL;
                 }
+                log_info("%s is complete", emu->name);
                 emu->status = all_done;
             } else {
-                log_err("Unexpected event data");
+                log_err("Unexpected event status");
                 return -EINVAL;
             }
         } else if (!strcmp(key, "result")) {
@@ -761,7 +760,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
                 if (!emu->result)
                     return -ENOMEM;
             } else {
-                log_err("Unexpected event data");
+                log_err("Unexpected event result");
                 return -EINVAL;
             }
         }  else if (json_object_get_type(val) == json_type_int) {
@@ -772,11 +771,11 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
             } else if (!strcmp(key, "iteration")) {
                 iter = json_object_get_int(val);
             } else {
-                log_err("Unexpected event data");
+                log_err("Unexpected event data: %s", key);
                 return -EINVAL;
             }
         } else {
-            log_err("Unexpected event data");
+            log_err("Unexpected event data: %s", key);
             return -EINVAL;
         }
     }
@@ -804,7 +803,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
                  emu->name, rem, sent, iter,
                  ready ? "waiting" : "not waiting", progress);
         if ((iter > 0) && (rem < 50 || iter >= 4) && !ready) {
-            log_info("emu %s: live done", emu->name);
+            log_info("%s live stage is done", emu->name);
             emu->status = live_done;
         }
     }
@@ -980,13 +979,9 @@ static int restore_emu(struct emu *emu)
         return -EINVAL;
     }
 
-    log_info("restore %s", emu->name);
-
     rc = em_client_send_cmd(emu->client, cmd_restore);
-    if (rc < 0) {
-        log_err("Failed to start restore for %s\n", emu->name);
+    if (rc < 0)
         return rc;
-    }
 
     emu->status = started;
 
@@ -1013,7 +1008,6 @@ static int migrate_live_emus(void)
             return rc;
         }
 
-        log_info("Migrate live %d: %s", i, emus[i].name);
         rc = em_client_send_cmd(emus[i].client, cmd_migrate_live);
         if (rc)
             return rc;
@@ -1113,14 +1107,13 @@ static int wait_for_event(void)
         if (FD_ISSET(xenopsd_in, &rfds)) {
             rc = xenopsd_read(0);
             if (rc == 0) {
-                log_err("Unexpected EOF on xenopsd control fd\n");
+                log_err("xenopsd: EOF on control fd\n");
                 return -EPIPE;
             } else if (rc < 0) {
                 log_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
                 return rc;
             }
             rc = xenopsd_process();
-            log_info("control message rc = %d", rc);
             if (rc < 0)
                 return rc;
         }
@@ -1129,14 +1122,13 @@ static int wait_for_event(void)
             if (emus[i].enabled && FD_ISSET(emus[i].client->fd, &rfds)) {
                 rc = em_client_read(emus[i].client, 0);
                 if (rc == 0) {
-                    log_err("Unexpected EOF on emu socket\n");
+                    log_err("em-client: Unexpected EOF on socket\n");
                     return -EPIPE;
                 } else if (rc < 0) {
-                    log_err("emu read error: %d, %s\n", -rc, strerror(-rc));
+                    log_err("em-client read error: %d, %s\n", -rc, strerror(-rc));
                     return rc;
                 }
                 rc = em_client_process(emus[i].client);
-                log_info("em client message rc = %d", rc);
                 if (rc < 0)
                     return rc;
             }
@@ -1240,7 +1232,7 @@ static void configure_emus(void)
 
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled & STAGE_ENABLED) {
-            log_info("emu %s enabled", emus[i].name);
+            log_info("%s is enabled", emus[i].name);
             if (!live_migrate)
                 emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) & ~STAGE_LIVE;
         } else {
@@ -1259,21 +1251,25 @@ static int operation_load(void)
     int i;
     int remaining = 0;
 
+    log_debug("Phase: configure_emus");
     configure_emus();
 
+    log_debug("Phase: startup_emus");
     rc = startup_emus();
     if (rc)
         goto out;
 
+    log_debug("Phase: connect_emus");
     rc = connect_emus();
     if (rc)
         goto out;
 
+    log_debug("Phase: init_emus");
     rc = init_emus();
     if (rc)
         goto out;
 
-    log_info("Wait for completion");
+    log_debug("Phase: wait_for_completion");
     /* Count number of emus we need to wait for. */
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled)
@@ -1289,7 +1285,6 @@ static int operation_load(void)
 
         for (i = 0; i < num_emus; i++) {
             if (emus[i].status == all_done) {
-                log_info("emu %s complete", emus[i].name);
                 xenopsd_send_result(&emus[i]);
                 emus[i].status = result_sent;
                 remaining--;
@@ -1299,6 +1294,7 @@ static int operation_load(void)
     rc = 0;
 
 out:
+    log_debug("Phase: migrate_end");
     end_rc = migrate_end();
     if (end_rc) {
         log_err("Error calling migrate_end(): %d, %s",
@@ -1308,6 +1304,7 @@ out:
     }
 
     if (rc) {
+        log_info("xenopsd: send error result %d, %s", -rc, strerror(-rc));
         end_rc = xenopsd_send_error_result(rc);
 
         if (end_rc)
@@ -1330,7 +1327,7 @@ static int migrate_abort(void)
     int rc = 0;
     int ret;
 
-    log_info("Tell all emus to abort");
+    log_info("Aborting all emus...");
 
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled) {
@@ -1361,31 +1358,38 @@ static int operation_save(void)
     int end_rc = 0;
     bool can_abort = false;
 
+    log_debug("Phase: configure_emus");
     configure_emus();
 
+    log_debug("Phase: startup_emus");
     rc = startup_emus();
     if (rc)
         goto out;
 
     can_abort = true;
 
+    log_debug("Phase: connect_emus");
     rc = connect_emus();
     if (rc)
         goto out;
 
+    log_debug("Phase: init_emus");
     rc = init_emus();
     if (rc)
         goto out;
 
     if (live_migrate) {
+        log_debug("Phase: request_track_emus");
         rc = request_track_emus();
         if (rc)
             goto out;
 
+        log_debug("Phase: migrate_live_emus");
         rc = migrate_live_emus();
         if (rc)
             goto out;
 
+        log_debug("Phase: wait until live started");
         rc = wait_on_condition(check_live_not_started);
         if (rc)
             goto out;
@@ -1393,22 +1397,27 @@ static int operation_save(void)
 
     can_abort = false;
 
+    log_debug("Phase: xenopsd_send_suspend");
     rc = xenopsd_send_suspend();
     if (rc)
         goto out;
 
+    log_debug("Phase: pause_emus");
     rc = pause_emus();
     if (rc)
         goto out;
 
+    log_debug("Phase: wait until live finished");
     rc = wait_on_condition(check_live_not_finished);
     if (rc)
         goto out;
 
+    log_debug("Phase: save_nonlive_one_by_one");
     rc = save_nonlive_one_by_one();
     if (rc)
         goto out;
 
+    log_debug("Phase: send_final_result");
     rc = xenopsd_send_final_result();
 
 out:
@@ -1420,6 +1429,7 @@ out:
     }
 
     if (!end_rc) {
+        log_debug("Phase: migrate_end");
         end_rc = migrate_end();
         if (end_rc) {
             log_err("Error calling migrate_end(): %d, %s",
@@ -1430,6 +1440,7 @@ out:
     }
 
     if (rc) {
+        log_info("xenopsd: send error result %d, %s", -rc, strerror(-rc));
         end_rc = xenopsd_send_error_result(rc);
         if (end_rc)
             log_err("sending error to xenopsd failed: %d, %s",
@@ -1478,9 +1489,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    log_info("Starting...");
-    log_debug("YYY...");
-    log_info("xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
+    log_info("Startup: xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
+    log_info("Startup: domid %d", domid);
+    log_info("Startup: operation mode: %s, %s", mode_names[operation_mode],
+             live_migrate ? "live" : "non-live");
 
     switch (operation_mode) {
     case op_pvsave:
