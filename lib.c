@@ -162,3 +162,17 @@ ssize_t strindex(const char * const *table, const char *item)
 
     return -1;
 }
+
+/*
+ * Close @fd, handling any interruptions due to receiving a signal.
+ * @return 0 on success. -errno on failure.
+ */
+int close_retry(int fd)
+{
+    int rc;
+
+    while ((rc = close(fd)) == -1 && (errno == EINTR))
+        ;
+
+    return rc == 1 ? -errno : 0;
+}

@@ -58,12 +58,16 @@ int em_client_alloc(em_client_t **cli, em_client_event_cb event_cb,
 }
 
 /* Close and free an em_client_t object given by @sock. */
-void em_client_free(em_client_t *cli)
+int em_client_free(em_client_t *cli)
 {
+    int rc = 0;
+
     if (cli->fd >= 0)
-        close(cli->fd);
+        rc = close_retry(cli->fd);
     json_tokener_free(cli->tok);
     free(cli);
+
+    return rc;
 }
 
 /*
@@ -97,7 +101,7 @@ int em_client_connect(em_client_t *cli, const char *path)
     {
         int saved_errno = errno;
         ERRN("connect()");
-        close(fd);
+        close_retry(fd);
         return -saved_errno;
     }
     cli->fd = fd;

@@ -627,19 +627,20 @@ static int exec_command(char **command,
 
     pid = fork();
     if (pid == -1) {
-        close(comm[0]);
-        close(comm[1]);
+        close_retry(comm[0]);
+        close_retry(comm[1]);
         return -errno;
     } else if (pid == 0) {
         int rc;
 
-        while ((rc = dup2(comm[1], STDOUT_FILENO)) == -1 && (errno == EINTR)) {}
+        while ((rc = dup2(comm[1], STDOUT_FILENO)) == -1 && (errno == EINTR))
+            ;
 
         if (rc < 0)
             _exit(1);
 
-        close(comm[1]);
-        close(comm[0]);
+        close_retry(comm[1]);
+        close_retry(comm[0]);
 
         setenv_nobuffs();
 
@@ -647,7 +648,7 @@ static int exec_command(char **command,
         _exit(1);
     }
 
-    close(comm[1]);
+    close_retry(comm[1]);
 
     do {
         ret = read_tlimit(comm[0], buf + nbytes,
@@ -667,7 +668,7 @@ static int exec_command(char **command,
     } while (nbytes < waitfor_size);
 
 out:
-    close(comm[0]);
+    close_retry(comm[0]);
     return ret;
 }
 
@@ -1040,24 +1041,36 @@ static int pause_emus(void)
     return 0;
 }
 
+/*
+ * Close connections to all connected emus and tell any emus we've started to
+ * quit. This will not return immediately if an error is received. Instead, it
+ * will perform all the work and return the first error code.
+ * @return 0 on success. -errno on failure.
+ */
 static int migrate_end(void)
 {
-   int fd;
    int i;
+   int ret;
+   int rc = 0;
 
    for (i=0; i< num_emus; i++) {
       if (emus[i].client) {
-
-         fd = emus[i].client->fd;
-         if (fd >= 0 && emus[i].startup)
-             em_client_send_cmd(emus[i].client, cmd_quit);
-         em_client_free(emus[i].client);
+         if (emus[i].client->fd >= 0 && emus[i].startup) {
+             ret = em_client_send_cmd(emus[i].client, cmd_quit);
+             if (ret && !rc)
+                 rc = ret;
+         }
+         ret = em_client_free(emus[i].client);
+         if (ret && !rc)
+             rc = ret;
       }
-      fd = emus[i].stream;
-      if (fd)
-          close(fd);
+      if (emus[i].stream) {
+          ret = close_retry(emus[i].stream);
+         if (ret && !rc)
+             rc = ret;
+      }
    }
-   return 0;
+   return rc;
 }
 
 /*
@@ -1305,7 +1318,7 @@ out:
 
 /*
  * Tell all emus to abort. This will not return immediately if an error is
- * received. Instead, it will send tell all the emus to abort and return the
+ * received. Instead, it will tell all the emus to abort and return the
  * first error code.
  * @return 0 on success. -errno on failure.
  */

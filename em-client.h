@@ -37,4 +37,4 @@ int em_client_alloc(em_client_t **cli, em_client_event_cb event_cb, void* data);
 int em_client_connect(em_client_t *cli, const char *path);
 int em_client_process(em_client_t *cli);
 int em_client_read(em_client_t *cli, int timeout);
-void em_client_free(em_client_t *cli);
+int em_client_free(em_client_t *cli);
