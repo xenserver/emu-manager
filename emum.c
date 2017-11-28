@@ -1359,13 +1359,15 @@ static int operation_save(void)
 {
     int rc;
     int end_rc = 0;
-    bool can_abort = true;
+    bool can_abort = false;
 
     configure_emus();
 
     rc = startup_emus();
     if (rc)
         goto out;
+
+    can_abort = true;
 
     rc = connect_emus();
     if (rc)
