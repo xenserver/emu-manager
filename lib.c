@@ -146,3 +146,19 @@ int argument_add(struct argument **list, const char *key, const char *value)
 
     return 0;
 }
+
+/*
+ * Search an item in an array of strings and return the index of the item.
+ * @return The index of the item if found. -1 if not found.
+ */
+ssize_t strindex(const char * const *table, const char *item)
+{
+    ssize_t i;
+
+    for (i = 0; table[i]; i++) {
+        if (!strcmp(table[i], item))
+            return i;
+    }
+
+    return -1;
+}

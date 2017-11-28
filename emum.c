@@ -154,16 +154,6 @@ static struct emu *find_emu_by_name(const char *name)
     return NULL;
 }
 
-static int str_lookup(const char* table[], char cmp[])
-{
-    int i;
-    for (i=0; table[i]; i++) {
-        if (strcmp(table[i], cmp)==0)
-           return i;
-    }
-    return -1;
-}
-
 /* Functions for communicating with xenopsd */
 
 /*
@@ -548,7 +538,7 @@ static void parse_args(int argc, char *argv[])
             parse_dm_arg(optarg);
             break;
         case arg_mode:
-            gMode = str_lookup(mode_names, optarg);
+            gMode = strindex(mode_names, optarg);
             if (gMode < 0) {
                 emu_err("Unknown mode '%s'", optarg);
                 exit(1);
@@ -569,7 +559,7 @@ static void parse_args(int argc, char *argv[])
             break;
         case arg_supports:
             gMode = op_end;
-            if (str_lookup(supports_table, optarg) >= 0)
+            if (strindex(supports_table, optarg) >= 0)
                 printf("true\n");
             else
                 printf("false\n");
