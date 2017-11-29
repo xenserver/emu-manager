@@ -50,6 +50,7 @@ enum stages {
     stage_start,
     stage_init,
     stage_live,
+    stage_ready,
     stage_pause,
     stage_paused,
     stage_stopcopy
@@ -59,6 +60,7 @@ enum stages {
 #define STAGE_START    (1 << stage_start)
 #define STAGE_INIT     (1 << stage_init)
 #define STAGE_LIVE     (1 << stage_live)
+#define STAGE_READY    (1 << stage_ready)
 #define STAGE_PAUSE    (1 << stage_pause)
 #define STAGE_PAUSED   (1 << stage_paused)
 #define STAGE_STOPCOPY (1 << stage_stopcopy)
@@ -127,7 +129,7 @@ char *xenguest_args[] = {
 #define num_emus 3
 struct emu emus[num_emus] = {
 /*   name,       startup,       waitfor,   waitfor_size, proto, enabled,*/
-    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_ENABLED),
+    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_READY | STAGE_ENABLED),
 /*   live_check, exp_total, client, stream, status,   result, extra, part_sent, sent, remaining, iter */
      true,       1000000,   NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1},
     {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,
@@ -1147,10 +1149,13 @@ static bool check_live_not_finished(const struct emu *emu)
     return (emu->enabled & STAGE_LIVE) && emu->status != all_done;
 }
 
-/* Returns true if @emu is live and has not yet started. False otherwise. */
-static bool check_live_not_started(const struct emu *emu)
+/*
+ * Returns true if @emu supports indicating readyness but is not yet ready.
+ * False otherwise.
+ */
+static bool check_not_ready(const struct emu *emu)
 {
-    return (emu->enabled & STAGE_LIVE) && emu->status == not_done;
+    return (emu->enabled & STAGE_READY) && emu->status == not_done;
 }
 
 /*
@@ -1237,7 +1242,8 @@ static void configure_emus(void)
         if (emus[i].enabled & STAGE_ENABLED) {
             log_info("%s is enabled", emus[i].name);
             if (!live_migrate)
-                emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) & ~STAGE_LIVE;
+                emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) &
+                                  ~(STAGE_LIVE | STAGE_READY);
         } else {
             emus[i].enabled = 0;
         }
@@ -1392,8 +1398,8 @@ static int operation_save(void)
         if (rc)
             goto out;
 
-        log_debug("Phase: wait until live started");
-        rc = wait_on_condition(check_live_not_started);
+        log_debug("Phase: wait until ready");
+        rc = wait_on_condition(check_not_ready);
         if (rc)
             goto out;
     }
