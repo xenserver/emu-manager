@@ -1027,6 +1027,27 @@ static int pause_emus(void)
     int rc;
 
     for (i = 0; i < num_emus; i++) {
+        if (!(emus[i].enabled & STAGE_PAUSE))
+            continue;
+
+        rc = em_client_send_cmd(emus[i].client, cmd_migrate_pause);
+        if (rc)
+            return rc;
+    }
+
+    return 0;
+}
+
+/*
+ * Send all emus the migrate_paused command.
+ * @return 0 on success. -errno on failure.
+ */
+static int migrate_paused(void)
+{
+    int i;
+    int rc;
+
+    for (i = 0; i < num_emus; i++) {
         if (!(emus[i].enabled & STAGE_PAUSED))
             continue;
 
@@ -1413,6 +1434,11 @@ static int operation_save(void)
 
     log_debug("Phase: pause_emus");
     rc = pause_emus();
+    if (rc)
+        goto out;
+
+    log_debug("Phase: migrate_paused");
+    rc = migrate_paused();
     if (rc)
         goto out;
 
