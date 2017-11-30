@@ -76,8 +76,6 @@ struct emu {
     enum protocol proto;
     int enabled;
 
-    int live_check;
-
     int exp_total;
 
     em_client_t *client;
@@ -126,17 +124,39 @@ char *xenguest_args[] = {
     NULL,
 };
 
-#define num_emus 3
-struct emu emus[num_emus] = {
-/*   name,       startup,       waitfor,   waitfor_size, proto, enabled,*/
-    {"xenguest", xenguest_args, "Ready\n", 6,            emp,   (FULL_LIVE | STAGE_READY | STAGE_ENABLED),
-/*   live_check, exp_total, client, stream, status,   result, extra, part_sent, sent, remaining, iter */
-     true,       1000000,   NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1},
-    {"vgpu",     NULL,          NULL,      0,            emp,   FULL_LIVE,
-     false ,     100000,    NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1},
-    {"qemu",     NULL,          NULL,      0,            qmp,   FULL_NONLIVE,
-     false,      10,        NULL,   0,      not_done, NULL,   NULL,  0,         0,    0,         -1}
+struct emu emus[] = {
+    {
+        .name = "xenguest",
+        .startup = xenguest_args,
+        .waitfor = "Ready\n",
+        .waitfor_size = 6,
+        .proto = emp,
+        .enabled = FULL_LIVE | STAGE_READY | STAGE_ENABLED,
+        .exp_total = 1000000,
+        .stream = -1,
+        .status = not_done,
+        .iter = -1
+    },
+    {
+        .name = "vgpu",
+        .proto = emp,
+        .enabled = FULL_LIVE,
+        .exp_total = 100000,
+        .stream = -1,
+        .status = not_done,
+        .iter = -1
+    },
+    {
+        .name = "qemu",
+        .proto = qmp,
+        .enabled = FULL_NONLIVE,
+        .exp_total = 10,
+        .stream = -1,
+        .status = not_done,
+        .iter = -1
+    },
 };
+#define num_emus ((int)(sizeof(emus) / sizeof(*emus)))
 
 /* Forward declarations */
 
@@ -1082,7 +1102,7 @@ static int migrate_end(void)
             if (ret && !rc)
                 rc = ret;
         }
-        if (emus[i].stream) {
+        if (emus[i].stream >= 0) {
             ret = close_retry(emus[i].stream);
             if (ret && !rc)
                 rc = ret;
@@ -1247,7 +1267,7 @@ static int save_nonlive_one_by_one(void)
                 return -rc;
         }
 
-        if (emus[i].stream)
+        if (emus[i].stream >= 0)
             syncfs(emus[i].stream);
     }
 
