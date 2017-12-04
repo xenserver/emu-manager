@@ -778,6 +778,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
             }
         } else if (!strcmp(key, "result")) {
             if (json_object_get_type(val) == json_type_string) {
+                free(emu->result);
                 emu->result = strdup(json_object_get_string(val));
                 if (!emu->result)
                     return -ENOMEM;
