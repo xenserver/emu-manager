@@ -391,7 +391,8 @@ static int xenopsd_send_error_result(int err)
     char msg[XENOPSD_MSG_SIZE];
     int rc;
 
-    rc = snprintf(msg, XENOPSD_MSG_SIZE, "error:error code %d\n", err);
+    rc = snprintf(msg, XENOPSD_MSG_SIZE, "error:code %d, %s\n",
+                  err, strerror(err));
     if (rc < 0)
         return -errno;
 
@@ -1355,7 +1356,7 @@ out:
 
     if (rc) {
         log_info("xenopsd: send error result %d, %s", -rc, strerror(-rc));
-        end_rc = xenopsd_send_error_result(rc);
+        end_rc = xenopsd_send_error_result(-rc);
 
         if (end_rc)
             log_err("sending error to xenopsd failed: %d, %s",
@@ -1496,7 +1497,7 @@ out:
 
     if (rc) {
         log_info("xenopsd: send error result %d, %s", -rc, strerror(-rc));
-        end_rc = xenopsd_send_error_result(rc);
+        end_rc = xenopsd_send_error_result(-rc);
         if (end_rc)
             log_err("sending error to xenopsd failed: %d, %s",
                     -end_rc, strerror(-end_rc));
