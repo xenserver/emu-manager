@@ -1,7 +1,7 @@
 #ifndef EM_CLIENT_H
 #define EM_CLIENT_H
 
-#include <json/json.h>
+#include <json.h>
 
 #include "lib.h"
 #include "emp.h"

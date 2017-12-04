@@ -6,7 +6,7 @@ OBJS := \
 	em-client.o \
 	lib.o
 
-CFLAGS  = -I$(shell pwd)
+CFLAGS  = -I$(shell pwd) $$(pkg-config --cflags json-c)
 
 ifeq ($(D), 1)
 CFLAGS += -g -O0 -DDEBUG_LOGGING
@@ -22,20 +22,17 @@ CFLAGS += -D_GNU_SOURCE \
           -Wold-style-declaration \
           -Wmissing-prototypes
 
-LDLIBS := -ljson-c
-
-
 # Get gcc to generate the dependencies for us.
 CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d
 
 DEPS     = .*.d
 
-LDFLAGS += -g
+LDFLAGS += -g $$(pkg-config --libs json-c)
 
 all: $(TARGET)
 
-$(TARGET): $(LIBS) $(OBJS)
-	gcc -o $@ $(LDFLAGS) $(OBJS) $(LIBS) $(LDLIBS)
+$(TARGET): $(OBJS)
+	gcc -o $@ $(OBJS) $(LDFLAGS)
 
 %.o: %.c
 	gcc -o $@ $(CFLAGS) -c $<
