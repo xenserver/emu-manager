@@ -642,6 +642,8 @@ static int exec_command(char **command,
     size_t nbytes = 0;
     char buf[CMD_START_RBUF_LEN];
 
+    assert(waitfor_size <= CMD_START_RBUF_LEN);
+
     if (pipe(comm) == -1)
         return -errno;
 
@@ -672,7 +674,7 @@ static int exec_command(char **command,
 
     do {
         ret = read_tlimit(comm[0], buf + nbytes,
-                          CMD_START_RBUF_LEN - nbytes, CMD_START_TIMEOUT);
+                          waitfor_size - nbytes, CMD_START_TIMEOUT);
         if (ret < 0) {
             goto out;
         } else if (ret == 0) {
@@ -680,12 +682,9 @@ static int exec_command(char **command,
             goto out;
         }
         nbytes += ret;
-
-        if (nbytes == waitfor_size) {
-            ret = !memcmp(buf, waitfor, waitfor_size) ? 0 : -EINVAL;
-            goto out;
-        }
     } while (nbytes < waitfor_size);
+
+    ret = !memcmp(buf, waitfor, waitfor_size) ? 0 : -EINVAL;
 
 out:
     close_retry(comm[0]);
