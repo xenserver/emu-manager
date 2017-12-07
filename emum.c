@@ -1224,11 +1224,11 @@ static int wait_on_condition(bool (*check)(const struct emu *emu))
         if (rc < 0 && rc != -ETIME) {
             log_err("Error waiting for events: %d, %s",
                     -rc, strerror(-rc));
-            return -rc;
+            return rc;
         }
         rc = update_progress();
         if (rc < 0)
-            return -rc;
+            return rc;
     }
 
     return 0;
@@ -1260,12 +1260,12 @@ static int save_nonlive_one_by_one(void)
             if (rc < 0 && rc != -ETIME) {
                 log_err("Error waiting for events: %d, %s",
                         -rc, strerror(-rc));
-                return -rc;
+                return rc;
             }
 
             rc = update_progress();
             if (rc < 0)
-                return -rc;
+                return rc;
         }
 
         if (emus[i].stream >= 0)
