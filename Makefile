@@ -1,7 +1,6 @@
 TARGET = emu-manager
 
 OBJS := \
-	emp.o \
 	emum.o \
 	em-client.o \
 	lib.o
@@ -27,7 +26,7 @@ CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d
 
 DEPS     = .*.d
 
-LDFLAGS += -g $$(pkg-config --libs json-c)
+LDFLAGS += -g $$(pkg-config --libs json-c) -lempserver
 
 all: $(TARGET)
 

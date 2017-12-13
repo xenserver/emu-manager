@@ -4,7 +4,7 @@
 #include <json.h>
 
 #include "lib.h"
-#include "emp.h"
+#include <emp.h>
 
 #define EM_CLIENT_BUF_SIZE 1024
 
