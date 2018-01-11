@@ -1389,6 +1389,7 @@ static int migrate_abort(void)
                     if (ret && !rc)
                         rc = ret;
                 }
+                break;
             case qmp:
                 abort();
                 break;
