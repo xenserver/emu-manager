@@ -98,7 +98,7 @@ struct emu {
 #define XENOPSD_RESTORE_MSG "restore:"
 #define XENOPSD_ACK_MSG "done"
 
-#define CMD_START_TIMEOUT 30
+#define CMD_START_TIMEOUT 60 * 3
 #define CMD_START_RBUF_LEN 128
 
 /* xenopsd state */
