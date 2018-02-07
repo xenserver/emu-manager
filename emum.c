@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <syslog.h>
 
@@ -73,6 +74,7 @@ struct emu {
     char **startup;
     char *waitfor;
     unsigned int waitfor_size;
+    pid_t pid;
     enum protocol proto;
     int enabled;
 
@@ -82,6 +84,8 @@ struct emu {
     int stream;
 
     enum state status;
+    int emu_error;
+    bool first_error;
     char *result;
     struct argument *extra;
 
@@ -99,6 +103,7 @@ struct emu {
 #define XENOPSD_ACK_MSG "done"
 
 #define CMD_START_TIMEOUT 60 * 3
+#define CMD_TERM_TIMEOUT  60 * 1
 #define CMD_START_RBUF_LEN 128
 
 /* xenopsd state */
@@ -113,6 +118,19 @@ static int domid = -1;
 static bool live_migrate;
 static int last_progress = -1;
 static enum operation_mode operation_mode = op_invalid;
+
+#define EEMUM_DISCONNECT (-2)
+#define EEMUM_DIED       (-3)
+#define EEMUM_EXITERROR  (-4)
+
+#define EEMUM_FIRST_ECODE EEMUM_DISCONNECT
+#define EEMUM_LAST_ECODE EEMUM_EXITERROR
+
+static char *emum_error_str[3] = {
+    "unexpectedly disconnected",
+    "was killed by a signal",
+    "exited with an error"
+};
 
 char *xenguest_args[] = {
     "/usr/libexec/xen/bin/xenguest",
@@ -162,6 +180,36 @@ struct emu emus[] = {
 
 static int restore_emu(struct emu *emu);
 static struct emu *find_emu_by_name(const char *name);
+
+
+static char *get_nonstandard_error(int err)
+{
+   if (err > 0)
+      return strerror(err);
+   else if (err > EEMUM_FIRST_ECODE || err < EEMUM_LAST_ECODE)
+      return "erroneous";
+   else
+      return emum_error_str[-err + EEMUM_FIRST_ECODE];
+}
+
+#define SET_EMU_ERR(em, er) set_emu_err(em, er, __func__);
+
+static int set_emu_err(const int emu, const int err, const char* func)
+{
+    static int first = true;
+    struct emu *e = &emus[emu];
+
+    log_err("%s: emu %s %s", func, e->name, get_nonstandard_error(err));
+
+    if (err && e->emu_error == 0) {
+        e->emu_error = err;
+        e->first_error = first;
+        first = false;
+    }
+    return err;
+}
+
+
 
 /* Functions for communicating with xenopsd */
 
@@ -314,7 +362,7 @@ static int xenopsd_send_message_with_ack(const char *msg)
     do {
         rc = xenopsd_read(XENOPSD_TIMEOUT);
         if (rc == 0) {
-            log_err("xenopsd: EOF on control fd\n");
+            log_err("xenopsd: Unexpected EOF on control fd.\n");
             return -EPIPE;
         } else if (rc < 0) {
             log_err("xenopsd read error: %d, %s\n", -rc, strerror(-rc));
@@ -390,9 +438,23 @@ static int xenopsd_send_error_result(int err)
 {
     char msg[XENOPSD_MSG_SIZE];
     int rc;
+    int emu = false;
+    char *emu_name = "";
+    int i;
+    int err_code = err;
 
-    rc = snprintf(msg, XENOPSD_MSG_SIZE, "error:code %d, %s\n",
-                  err, strerror(err));
+    for (i = 0; i < num_emus; i++) {
+        if (emus[i].first_error) {
+              emu = true;
+              err_code = emus[i].emu_error;
+              emu_name = emus[i].name;
+        }
+    }
+
+    rc = snprintf(msg, XENOPSD_MSG_SIZE, "error:%s%s%s\n", emu_name, (emu) ? " " : "",
+                  get_nonstandard_error(err_code));
+    log_info("Reporting %s", msg);
+
     if (rc < 0)
         return -errno;
 
@@ -634,7 +696,7 @@ static int setenv_nobuffs(void)
  * @return 0 on success. -errno on failure.
  */
 static int exec_command(char **command,
-                        char *waitfor, unsigned int waitfor_size)
+                        char *waitfor, unsigned int waitfor_size, pid_t *child_pid)
 {
     int comm[2];
     pid_t pid;
@@ -669,7 +731,7 @@ static int exec_command(char **command,
         execvp(command[0], command);
         _exit(1);
     }
-
+    *child_pid = pid;
     close_retry(comm[1]);
 
     do {
@@ -767,7 +829,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
 
                 if (strcmp(status, "completed")) {
                     log_err("Error: emu %s status: %s", emu->name, status);
-                    return -EINVAL;
+                    return -EREMOTEIO;
                 }
                 log_info("%s is complete", emu->name);
                 emu->status = all_done;
@@ -854,7 +916,7 @@ static int startup_emus(void)
             }
 
             rc = exec_command(emus[i].startup,
-                              emus[i].waitfor, emus[i].waitfor_size);
+                              emus[i].waitfor, emus[i].waitfor_size, &emus[i].pid);
             if (rc) {
                 log_err("Error starting %s: %d, %s",
                         emus[i].name, -rc, strerror(-rc));
@@ -1139,9 +1201,11 @@ static int wait_for_event(void)
             continue;
 
         fd = emus[i].client->fd;
-        FD_SET(fd, &rfds);
-        if (fd > max_fd)
-            max_fd = fd;
+        if (fd >= 0 ) {
+            FD_SET(fd, &rfds);
+            if (fd > max_fd)
+                max_fd = fd;
+        }
     }
 
     rc = select(max_fd + 1, &rfds, &wfds, &xfds, &tv);
@@ -1150,7 +1214,7 @@ static int wait_for_event(void)
         if (FD_ISSET(xenopsd_in, &rfds)) {
             rc = xenopsd_read(0);
             if (rc == 0) {
-                log_err("xenopsd: EOF on control fd\n");
+                log_err("xenopsd: Unexpected EOF on control fd\n");
                 return -EPIPE;
             } else if (rc < 0) {
                 log_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
@@ -1165,15 +1229,17 @@ static int wait_for_event(void)
             if (emus[i].enabled && FD_ISSET(emus[i].client->fd, &rfds)) {
                 rc = em_client_read(emus[i].client, 0);
                 if (rc == 0) {
-                    log_err("em-client: Unexpected EOF on socket\n");
+                    log_err("em-client: emu %s unexpectedly disconnected (died?)", emus[i].name);
+
+                    emus[i].client->fd = -1;
+                    SET_EMU_ERR(i, EEMUM_DISCONNECT);
                     return -EPIPE;
-                } else if (rc < 0) {
-                    log_err("em-client read error: %d, %s\n", -rc, strerror(-rc));
-                    return rc;
-                }
+                } else if (rc < 0)
+                    return set_emu_err(i, rc, "em_client_read");
+
                 rc = em_client_process(emus[i].client);
                 if (rc < 0)
-                    return rc;
+                    return set_emu_err(i, rc, "em_client_process");
             }
         }
 
@@ -1292,6 +1358,83 @@ static void configure_emus(void)
     }
 }
 
+static int out_of_time;
+
+static void alarm_sig_handler(int sig)
+{
+    (void)(sig);
+    out_of_time = true;
+}
+
+static void wait_for_children(void) 
+{
+    int i;
+    int status;
+    int errcode = 0;
+    pid_t pid;
+    int emu_pids_remaining = 0;
+    struct sigaction sa;
+
+    for (i = 0; i < num_emus; i++)
+         if (emus[i].startup && emus[i].pid)
+             emu_pids_remaining++;
+
+    out_of_time = false;
+
+    sa.sa_handler = alarm_sig_handler;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGALRM, &sa, NULL)) {
+        log_err("Error waiting on  SIGALM %d, %s", errno, strerror(errno));
+        return;
+    }
+
+    alarm(CMD_TERM_TIMEOUT);
+
+    log_debug("emus left = %d", emu_pids_remaining);
+    /* Wait politly for children to terminate */
+    while (!out_of_time && emu_pids_remaining > 0) {
+        log_debug("waiting for children");
+        pid = wait(&status);
+        for (i = 0; i < num_emus; i++) {
+            if (emus[i].pid == pid) {
+
+               if (WIFSIGNALED(status))
+                   errcode = EEMUM_DIED;
+               else if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+                   errcode = EEMUM_EXITERROR;
+
+               log_debug("emu %s %s", emus[i].name,
+                                      errcode ? get_nonstandard_error(errcode) : "completed normally");
+
+               /* Can we improve the current exit reason? */
+               if (errcode && emus[i].emu_error)
+                   emus[i].emu_error = errcode;
+               emus[i].pid = 0;
+               emu_pids_remaining--;
+               break;
+            }
+        }
+    }
+    alarm(0);
+
+    /* Anyone left will be killed */
+    if (out_of_time) {
+        log_err("Timeout on emu exit");
+        for (i = 0; i < num_emus; i++) {
+            if (emus[i].startup && emus[i].pid) {
+                 log_err("sending sigkill to %s", emus[i].name);
+                 kill(emus[i].pid, SIGKILL);
+                 pid = waitpid(emus[i].pid, &status, 0);
+                 if (pid == -1) {
+                     log_err("Failed to wait for %s, due to %s", emus[i].name, strerror(errno));
+                 }
+            }
+        }
+    }
+    log_debug("All children exited");
+}
+
 /*
  * Perform the load operation. Reports the final result or an error to xenopsd.
  * @return 0 on success. -errno on failure.
@@ -1354,8 +1497,9 @@ out:
             rc = end_rc;
     }
 
+    wait_for_children();
+
     if (rc) {
-        log_info("xenopsd: send error result %d, %s", -rc, strerror(-rc));
         end_rc = xenopsd_send_error_result(-rc);
 
         if (end_rc)
@@ -1408,7 +1552,6 @@ static int operation_save(void)
 {
     int rc;
     int end_rc = 0;
-    bool can_abort = false;
 
     log_debug("Phase: configure_emus");
     configure_emus();
@@ -1417,8 +1560,6 @@ static int operation_save(void)
     rc = startup_emus();
     if (rc)
         goto out;
-
-    can_abort = true;
 
     log_debug("Phase: connect_emus");
     rc = connect_emus();
@@ -1446,8 +1587,6 @@ static int operation_save(void)
         if (rc)
             goto out;
     }
-
-    can_abort = false;
 
     log_debug("Phase: xenopsd_send_suspend");
     rc = xenopsd_send_suspend();
@@ -1478,26 +1617,25 @@ static int operation_save(void)
     rc = xenopsd_send_final_result();
 
 out:
-    if (rc && can_abort) {
+    if (rc) {
         end_rc = migrate_abort();
         if (end_rc)
             log_err("Error calling migrate_abort(): %d, %s",
                     -end_rc, strerror(-end_rc));
     }
 
-    if (!end_rc) {
-        log_debug("Phase: migrate_end");
-        end_rc = migrate_end();
-        if (end_rc) {
-            log_err("Error calling migrate_end(): %d, %s",
-                    -end_rc, strerror(-end_rc));
-            if (!rc)
-                rc = end_rc;
-        }
+    log_debug("Phase: migrate_end");
+    end_rc = migrate_end();
+    if (end_rc) {
+        log_err("Error calling migrate_end(): %d, %s",
+                -end_rc, strerror(-end_rc));
+        if (!rc)
+            rc = end_rc;
     }
 
+    wait_for_children();
+
     if (rc) {
-        log_info("xenopsd: send error result %d, %s", -rc, strerror(-rc));
         end_rc = xenopsd_send_error_result(-rc);
         if (end_rc)
             log_err("sending error to xenopsd failed: %d, %s",
