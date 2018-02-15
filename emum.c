@@ -181,6 +181,22 @@ struct emu emus[] = {
 static int restore_emu(struct emu *emu);
 static struct emu *find_emu_by_name(const char *name);
 
+static int set_cloexec_flag_for_emus(void)
+{
+    int i;
+
+    for (i = 0; i < num_emus; i++) {
+        if (emus[i].stream >= 0) {
+            if (set_cloexec_flag(emus[i].stream, true)) {
+                 int saved_error = errno;
+                 log_err("Failed to set_cloexec flag on stream %d for %s due to %s",
+                          emus[i].stream, emus[i].name, strerror(saved_error));
+                 return -saved_error;
+            }
+        }
+    }
+    return 0;
+}
 
 static char *get_nonstandard_error(int err)
 {
@@ -1679,6 +1695,15 @@ int main(int argc, char *argv[])
         log_err("Control fd(s) not set!");
         return 1;
     }
+    if (set_cloexec_flag(xenopsd_in, true) || set_cloexec_flag(xenopsd_out, true)) {
+        log_err("failed to set_cloexec flag for control fds %d, %s",
+                errno, strerror(errno));
+        return 1;
+    }
+
+    if (set_cloexec_flag_for_emus())
+         return 1;
+
     if (domid == -1) {
         log_err("domid not set!");
         return 1;

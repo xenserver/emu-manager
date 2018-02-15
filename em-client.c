@@ -71,7 +71,7 @@ int em_client_connect(em_client_t *cli, const char *path)
     if (strlen(path) >= sizeof(addr.sun_path))
         return ENAMETOOLONG;
 
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         int saved_errno = errno;
         log_err("em-client: Error creating socket: %d, %s",
@@ -85,8 +85,7 @@ int em_client_connect(em_client_t *cli, const char *path)
 
     log_info("em-client: connect to %s", addr.sun_path);
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
-    {
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr))) {
         int saved_errno = errno;
         log_err("em-client: Error connecting to socket: %d, %s",
                 errno, strerror(errno));
