@@ -1072,20 +1072,13 @@ static int request_track_emus(void)
  */
 static int restore_emu(struct emu *emu)
 {
-    int rc;
-
     if (emu->status != not_done) {
         log_err("Request to restore emu '%s' already in progress", emu->name);
         return -EINVAL;
     }
-
-    rc = em_client_send_cmd(emu->client, cmd_restore);
-    if (rc < 0)
-        return rc;
-
     emu->status = started;
 
-    return 0;
+    return em_client_send_cmd(emu->client, cmd_restore);
 }
 
 /*
