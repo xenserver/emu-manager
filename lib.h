@@ -27,4 +27,5 @@ void log_debug(char *fmt, ...);
 void log_info(char *fmt, ...);
 void log_err(char *fmt, ...);
 
+int set_cloexec_flag(int fd, bool value);
 #endif

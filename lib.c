@@ -224,3 +224,27 @@ void log_err(char *fmt, ...)
     vsyslog(LOG_ERR, fmt, ap);
     va_end(ap);
 }
+
+/*
+ * Set the FD_CLOEXEC flag of desc if value is nonzero,
+ * or clear the flag if value is 0.
+ * Return 0 on success, or -1 on error with errno set.
+ */
+int set_cloexec_flag(int fd, bool value)
+{
+    int rc_flags;
+
+    rc_flags = fcntl(fd, F_GETFD, 0);
+    if (rc_flags < 0)
+        return rc_flags;
+
+    if (value)
+        rc_flags |= FD_CLOEXEC;
+    else
+        rc_flags &= ~FD_CLOEXEC;
+
+    rc_flags = fcntl(fd, F_SETFD, rc_flags);
+
+    return (rc_flags < 0) ? rc_flags : 0;
+}
+
