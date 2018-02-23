@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -81,7 +82,7 @@ struct emu {
     int exp_total;
 
     em_client_t *client;
-    int stream;
+    struct stream_fd *stream;
 
     enum state status;
     int emu_error;
@@ -93,6 +94,17 @@ struct emu {
     uint64_t sent;
     uint64_t remaining;
     int iter;
+};
+
+struct stream_fd {
+    int fd;
+/* Bit mask */
+#define FD_CLOSED       1
+#define FD_BUSY         2
+    int state;
+
+    int remaining_uses;
+    int refs;
 };
 
 #define CONTROL_PATH "/var/xen/%s/%d/control"
@@ -151,7 +163,7 @@ struct emu emus[] = {
         .proto = emp,
         .enabled = FULL_LIVE | STAGE_READY | STAGE_ENABLED,
         .exp_total = 1000000,
-        .stream = -1,
+        .stream = NULL,
         .status = not_done,
         .iter = -1
     },
@@ -160,7 +172,7 @@ struct emu emus[] = {
         .proto = emp,
         .enabled = FULL_LIVE,
         .exp_total = 100000,
-        .stream = -1,
+        .stream = NULL,
         .status = not_done,
         .iter = -1
     },
@@ -169,7 +181,7 @@ struct emu emus[] = {
         .proto = qmp,
         .enabled = FULL_NONLIVE,
         .exp_total = 10,
-        .stream = -1,
+        .stream = NULL,
         .status = not_done,
         .iter = -1
     },
@@ -181,16 +193,175 @@ struct emu emus[] = {
 static int restore_emu(struct emu *emu);
 static struct emu *find_emu_by_name(const char *name);
 
+/*
+ * Check streams fds are safe to use.
+ * A stream with random write access allows for diffrent processes to
+ * inadvertently write over each others data, resulting in curruption.
+ * This can occure without any seeking - simply due to metadata
+ * cacheing issues.
+ */
+static int check_stream_fd(int fd)
+{
+    struct stat statbuf;
+    int r;
+
+    r = fstat(fd, &statbuf);
+    if (r < 0)
+        return -errno;
+
+    /* Sockets can't do random write access and so is safe. */
+    if (S_ISSOCK(statbuf.st_mode))
+        return 0;
+
+    r = fcntl(fd, F_GETFL);
+    if (r == -1)
+        return -errno;
+
+    /*
+     * If the fd represents a file, and it is either read only or
+     * has O_APPEND set, then it also can't do random write access
+     * and is also safe.
+     */
+    if (((r & O_ACCMODE) == O_RDONLY) || (r & O_APPEND))
+        return 0;
+
+    log_info("FD %d is a file with flags %x", fd, r);
+
+    return -ENOSTR;
+}
+
+static int set_stream(struct emu *emu, int fd)
+{
+    struct stream_fd *c_fd = NULL;
+    int i;
+
+    if (emu->stream) {
+        log_err("Emu %s cannot have more then one stream. First %d Second %d", emu->name, emu->stream->fd, fd);
+        return -EINVAL;
+    }
+
+    for (i = 0; i < num_emus; i++) {
+        if (emus[i].stream && emus[i].stream->fd == fd) {
+            c_fd = emus[i].stream;
+            break;
+        }
+    }
+
+    /* If not found, add */
+    if (c_fd == NULL) {
+        int rc;
+
+        c_fd = malloc(sizeof(struct stream_fd));
+        if (!c_fd) {
+            log_err("Failed to alloc for stream_fd");
+            return -ENOMEM;
+        }
+
+        c_fd->fd = fd;
+        c_fd->remaining_uses = 1;
+        c_fd->refs = 1;
+        c_fd->state = 0;
+
+        rc = check_stream_fd(fd);
+        if (rc) {
+            log_err("Failed to validate stream %d for %s: %s", fd, emu->name, strerror(-rc));
+            return rc;
+        }
+
+    } else {
+        c_fd->remaining_uses++;
+        c_fd->refs++;
+    }
+
+    emu->stream = c_fd;
+
+    return 0;
+}
+
+static int free_stream(struct emu *emu)
+{
+    struct stream_fd *fd;
+
+    assert(emu);
+
+    if (!emu->stream)
+        return 0;
+
+    fd = emu->stream;
+    if (fd->refs == 0)
+        return -EINVAL;
+
+    emu->stream = NULL;
+
+    fd->refs--;
+    if (fd->refs == 0) {
+        if (!(fd->state & FD_CLOSED)) {
+            int rc;
+            log_info("Closing fd %d, before freeing for %s", fd->fd, emu->name);
+            rc = close_retry(fd->fd);
+            if (rc)
+                 log_err("Failed to close strem fd for emu %s:", emu->name, strerror(-rc));
+        }
+        free(fd);
+    }
+    return 0;
+}
+
+static int set_used_stream(struct emu *emu)
+{
+    struct stream_fd *fd;
+
+    assert(emu);
+    assert(emu->stream);
+    fd = emu->stream;
+
+    if (fd->remaining_uses == 0 || fd->state & FD_CLOSED) {
+        log_err("Attempted to use a stream FD who's remaining uses is %d and is %s.",
+                 fd->remaining_uses, (fd->state & FD_CLOSED) ? "closed" : "open");
+        return -EINVAL;
+    }
+
+    fd->remaining_uses--;
+    if (fd->remaining_uses == 0) {
+        int rc;
+
+        rc = close_retry(fd->fd);
+        if (rc) {
+            log_err("Failed to close strem fd for emu %s", emu->name);
+            return rc;
+        }
+        fd->state |= FD_CLOSED;
+    }
+    return 0;
+}
+
+static int set_stream_busy(struct emu *emu, bool busy)
+{
+    struct stream_fd *fd;
+
+    assert(emu);
+    assert(emu->stream);
+    fd = emu->stream;
+
+    if (!!(fd->state & FD_BUSY) == busy) {
+        log_err("Attempted to set stream as %s when already in this state.", (busy) ? "busy" : "idle");
+        return -EINVAL;
+    }
+
+    fd->state = busy ? fd->state | FD_BUSY : fd->state & ~FD_BUSY;
+    return 0;
+}
+
 static int set_cloexec_flag_for_emus(void)
 {
     int i;
 
     for (i = 0; i < num_emus; i++) {
-        if (emus[i].stream >= 0) {
-            if (set_cloexec_flag(emus[i].stream, true)) {
+        if (emus[i].stream) {
+            if (set_cloexec_flag(emus[i].stream->fd, true)) {
                  int saved_error = errno;
                  log_err("Failed to set_cloexec flag on stream %d for %s due to %s",
-                          emus[i].stream, emus[i].name, strerror(saved_error));
+                          emus[i].stream->fd, emus[i].name, strerror(saved_error));
                  return -saved_error;
             }
         }
@@ -224,8 +395,6 @@ static int set_emu_err(const int emu, const int err, const char* func)
     }
     return err;
 }
-
-
 
 /* Functions for communicating with xenopsd */
 
@@ -528,7 +697,8 @@ static void parse_dm_arg(char *arg)
     if (param) {
         switch (emu->proto) {
         case emp:
-            emu->stream = parse_int(param);
+            if (set_stream(emu, parse_int(param)))
+                 exit(1);
             break;
         case qmp:
             abort();
@@ -600,7 +770,9 @@ static void parse_args(int argc, char *argv[])
             set_debug_log(!strcmp(optarg, "true"));
             break;
         case arg_fd:
-            emus[0].stream = parse_int(optarg);
+            rc = set_stream(&emus[0], parse_int(optarg));
+            if (rc)
+                exit(1);
             break;
         case arg_domid:
             domid = parse_int(optarg);
@@ -842,6 +1014,7 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
         if (!strcmp(key, "status")) {
             if (json_object_get_type(val) == json_type_string) {
                 const char *status = json_object_get_string(val);
+                int rc;
 
                 if (strcmp(status, "completed")) {
                     log_err("Error: emu %s status: %s", emu->name, status);
@@ -849,6 +1022,9 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
                 }
                 log_info("%s is complete", emu->name);
                 emu->status = all_done;
+                rc = set_stream_busy(emu, false);
+                if (rc)
+                    return rc;
             } else {
                 log_err("Unexpected event status");
                 return -EINVAL;
@@ -1005,16 +1181,31 @@ static int init_emus(void)
     struct emu *emu;
 
     for (i = 0; i < num_emus; i++) {
+        struct stream_fd *stream;
+
         emu = &emus[i];
         if (!(emu->enabled && STAGE_INIT))
             continue;
 
+        stream = emu->stream;
+
+        if (stream && stream->remaining_uses == 0) {
+            log_err("Attempted to use a stream FD who's remaning uses is already 0");
+            return -EINVAL;
+        }
+
         switch (emu->proto) {
         case emp:
             rc = em_client_send_cmd_fd(emu->client, cmd_migrate_init,
-                                       emu->stream);
+                                       stream ? stream->fd : -1);
             if (rc)
                 return rc;
+
+            if (stream) {
+                rc = set_used_stream(emu);
+                if (rc)
+                    return rc;
+            }
 
             if (emu->extra) {
                 rc = em_client_send_cmd_args(emu->client, cmd_set_args,
@@ -1077,6 +1268,8 @@ static int restore_emu(struct emu *emu)
         return -EINVAL;
     }
     emu->status = started;
+    if (set_stream_busy(emu, true))
+        return -EINVAL;
 
     return em_client_send_cmd(emu->client, cmd_restore);
 }
@@ -1093,6 +1286,10 @@ static int migrate_live_emus(void)
     for (i = 0; i < num_emus; i++) {
         if (!(emus[i].enabled & STAGE_LIVE))
             continue;
+
+        rc = set_stream_busy(&emus[i], true);
+        if (rc)
+           return rc;
 
         rc = xenopsd_send_prepare(&emus[i]);
         if (rc < 0) {
@@ -1174,10 +1371,10 @@ static int migrate_end(void)
             if (ret && !rc)
                 rc = ret;
         }
-        if (emus[i].stream >= 0) {
-            ret = close_retry(emus[i].stream);
-            if (ret && !rc)
-                rc = ret;
+        ret = free_stream(&emus[i]);
+        if (ret && !rc) {
+           log_err("Failed to free stream for %s", emus[i].name);
+           rc = ret;
         }
     }
     return rc;
@@ -1322,6 +1519,10 @@ static int save_nonlive_one_by_one(void)
         if (!(emus[i].enabled & STAGE_STOPCOPY))
             continue;
 
+        rc = set_stream_busy(&emus[i], true);
+        if (rc)
+           return rc;
+
         rc = xenopsd_send_prepare(&emus[i]);
         if (rc < 0)
             return rc;
@@ -1372,7 +1573,7 @@ static void alarm_sig_handler(int sig)
     out_of_time = true;
 }
 
-static void wait_for_children(void) 
+static void wait_for_children(void)
 {
     int i;
     int status;
@@ -1660,6 +1861,8 @@ int main(int argc, char *argv[])
     int rc;
     struct sigaction sa;
     char *ident;
+
+    openlog(NULL, LOG_PID, LOG_DAEMON);
 
     parse_args(argc, argv);
 
