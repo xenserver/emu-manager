@@ -1342,9 +1342,6 @@ static int save_nonlive_one_by_one(void)
             if (rc < 0)
                 return rc;
         }
-
-        if (emus[i].stream >= 0)
-            syncfs(emus[i].stream);
     }
 
     return 0;
