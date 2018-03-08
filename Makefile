@@ -3,7 +3,8 @@ TARGET = emu-manager
 OBJS := \
 	emum.o \
 	em-client.o \
-	lib.o
+	lib.o \
+	qmp.o
 
 CFLAGS  = -I$(shell pwd) $$(pkg-config --cflags json-c)
 

@@ -130,6 +130,7 @@ static int process_object(em_client_t *cli, json_object *jobj)
     json_type type;
     json_object *event = NULL;
     json_object *data = NULL;
+    json_object *QMP_msg = NULL;
 
     assert(jobj);
 
@@ -159,21 +160,25 @@ static int process_object(em_client_t *cli, json_object *jobj)
         } else if (!strcmp(key, "data") &&
                    json_object_get_type(val) == json_type_object) {
             data = val;
+        } else if (!strcmp(key, "QMP") &&
+                   json_object_get_type(val) == json_type_object) {
+            QMP_msg = val;
+        } else if (!strcmp(key, "timestamp")) {
+            log_debug("ignoring QMP timestamp");
         } else {
             log_err("em-client sent unexpected key %s\n", key);
             return -EINVAL;
         }
     }
 
-    if (event && data) {
+    if (event) {
         if (cli->event_cb)
             return cli->event_cb(cli, json_object_get_string(event), data);
-    } else if (event && !data) {
-        log_err("em-client sent event without data");
-        return -EINVAL;
-    } else if (!event && data) {
+    } else if (data) {
         log_err("em-client sent data without event");
         return -EINVAL;
+    } else if (QMP_msg) {
+        return cli->event_cb(cli, "QMP", QMP_msg);
     }
 
     return 0;
@@ -224,16 +229,10 @@ int em_client_process(em_client_t *cli)
     return (rc < 0) ? rc : 0;
 }
 
-/*
- * Send the command given by @cmd_num, an @fd, and a list of arguments given by
- * @arg to em client @cli. Wait for a response.
- * @return 0 on success. -errno on error.
- */
-int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
-                               int fd, struct argument *arg)
+static int em_client_send_cmd_fd_args(em_client_t *cli, const struct command *cmd,
+                                      int fd, struct argument *arg)
 {
     char buf[EM_CLIENT_BUF_SIZE];
-    const struct command *cmd = command_from_num(cmd_num);
     int rc;
 
     assert(cli);
@@ -255,7 +254,7 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
         remaining -= rc;
 
         while (arg) {
-            rc = snprintf(ptr, remaining, "\"%s\":\"%s\"%s ",
+            rc = snprintf(ptr, remaining, "\"%s\":%s%s ",
                           arg->key, arg->value, arg->next ? "," : "");
             if (rc < 0)
                 return -rc;
@@ -281,7 +280,7 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
             return -EMSGSIZE;
     }
 
-    log_debug("Sending message '%s' to em-client", buf);
+    log_debug("Sending message '%s' to em-client on %d", buf, fd);
 
     if (cmd->needs_fd)
         rc = send_buf_and_fd(cli->fd, buf, strlen(buf), fd);
@@ -311,24 +310,17 @@ int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
     return (rc < 0) ? rc : 0;
 }
 
-/*
- * Send the command given by @cmd_num to em client @cli. Wait for a
- * response.
- * @return 0 on success. -errno on error.
- */
-int em_client_send_cmd(em_client_t *cli, enum command_num cmd_num)
-{
-    return em_client_send_cmd_fd_args(cli, cmd_num, -1, NULL);
-}
 
 /*
- * Send the command given by @cmd_num and an @fd to em client @cli. Wait for
- * a response.
+ * Send the command given by @cmd_num, an @fd, and a list of arguments given by
+ * @arg to em client @cli. Wait for a response.
  * @return 0 on success. -errno on error.
  */
-int em_client_send_cmd_fd(em_client_t *cli, enum command_num cmd_num, int fd)
+static int qmp_client_send_cmd_fd_args(em_client_t *cli, enum qmp_command_num cmd_num,
+                               int fd, struct argument *arg)
 {
-    return em_client_send_cmd_fd_args(cli, cmd_num, fd, NULL);
+    const struct command *cmd = qmp_command_from_num(cmd_num);
+    return em_client_send_cmd_fd_args(cli, cmd, fd, arg);
 }
 
 /*
@@ -336,8 +328,61 @@ int em_client_send_cmd_fd(em_client_t *cli, enum command_num cmd_num, int fd)
  * em client @cli. Wait for a response.
  * @return 0 on success. -errno on error.
  */
-int em_client_send_cmd_args(em_client_t *cli, enum command_num cmd_num,
+int qmp_client_send_cmd_args(em_client_t *cli, enum qmp_command_num cmd_num,
+                             struct argument *arg)
+{
+    return qmp_client_send_cmd_fd_args(cli, cmd_num, -1, arg);
+}
+
+/*
+ *  Send the command given by @cmd_num to em client @cli. Wait for a
+ *  response.
+ *  @return 0 on success. -errno on error.
+ */
+int qmp_client_send_cmd(em_client_t *cli, enum qmp_command_num cmd_num)
+{
+    return qmp_client_send_cmd_fd_args(cli, cmd_num, -1, NULL);
+}
+
+/*
+ * Send the command given by @cmd_num, an @fd, and a list of arguments given by
+ * @arg to em client @cli. Wait for a response.
+ * @return 0 on success. -errno on error.
+ */
+int emp_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
+                               int fd, struct argument *arg)
+{
+    const struct command *cmd = command_from_num(cmd_num);
+    return em_client_send_cmd_fd_args(cli, cmd, fd, arg);
+}
+
+/*
+ * Send the command given by @cmd_num to em client @cli. Wait for a
+ * response.
+ * @return 0 on success. -errno on error.
+ */
+int emp_client_send_cmd(em_client_t *cli, enum command_num cmd_num)
+{
+    return emp_client_send_cmd_fd_args(cli, cmd_num, -1, NULL);
+}
+
+/*
+ * Send the command given by @cmd_num and an @fd to em client @cli. Wait for
+ * a response.
+ * @return 0 on success. -errno on error.
+ */
+int emp_client_send_cmd_fd(em_client_t *cli, enum command_num cmd_num, int fd)
+{
+    return emp_client_send_cmd_fd_args(cli, cmd_num, fd, NULL);
+}
+
+/*
+ * Send the command given by @cmd_num and a list of arguments given by @arg to
+ * em client @cli. Wait for a response.
+ * @return 0 on success. -errno on error.
+ */
+int emp_client_send_cmd_args(em_client_t *cli, enum command_num cmd_num,
                             struct argument *arg)
 {
-    return em_client_send_cmd_fd_args(cli, cmd_num, -1, arg);
+    return emp_client_send_cmd_fd_args(cli, cmd_num, -1, arg);
 }

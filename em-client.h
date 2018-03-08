@@ -5,6 +5,7 @@
 
 #include "lib.h"
 #include <emp.h>
+#include "qmp.h"
 
 #define EM_CLIENT_BUF_SIZE 1024
 
@@ -30,11 +31,18 @@ int em_client_connect(em_client_t *cli, const char *path);
 int em_client_read(em_client_t *cli, int timeout);
 int em_client_process(em_client_t *cli);
 
-int em_client_send_cmd(em_client_t *cli, enum command_num cmd_num);
-int em_client_send_cmd_fd(em_client_t *cli, enum command_num cmd_num, int fd);
-int em_client_send_cmd_args(em_client_t *cli, enum command_num cmd_num,
+int emp_client_send_cmd(em_client_t *cli, enum command_num cmd_num);
+int emp_client_send_cmd_fd(em_client_t *cli, enum command_num cmd_num, int fd);
+int emp_client_send_cmd_args(em_client_t *cli, enum command_num cmd_num,
                             struct argument *args);
-int em_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
+int emp_client_send_cmd_fd_args(em_client_t *cli, enum command_num cmd_num,
                                int fd, struct argument *args);
+
+
+int qmp_client_send_cmd_args(em_client_t *cli, enum qmp_command_num cmd_num,
+                            struct argument *args);
+int qmp_client_send_cmd(em_client_t *cli, enum qmp_command_num cmd_num);
+int qmp_client_send_cmd_fd(em_client_t *cli, enum qmp_command_num cmd_num, int fd);
+
 
 #endif

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <unistd.h>
 #include <errno.h>
@@ -86,7 +87,7 @@ int send_buf_and_fd(int socket, void *buf, int count, int fd_to_send)
     struct iovec iov;
     struct cmsghdr *cmsg;
     /*
-     * Storage space needed for an ancillary element with a paylod of length
+     * Storage space needed for an ancillary element with a payload of length
      * is CMSG_SPACE(sizeof(length)).
      */
     char control[CMSG_SPACE(sizeof(int))];
@@ -123,9 +124,12 @@ int send_buf_and_fd(int socket, void *buf, int count, int fd_to_send)
 
 /*
  * Append the given @key and @value pair to the argument list given by @list.
+ * This function moves the ownership of @key and @value, to the list.
+ * Both @key and @value should be heap objects, which are automatically freed
+ * on error, or with the rest of the list.
  * @return 0 on success. -errno on failure.
  */
-int argument_add(struct argument **list, const char *key, const char *value)
+static int argument_add_raw(struct argument **list, char *key, char *value)
 {
     struct argument *xa;
 
@@ -133,8 +137,8 @@ int argument_add(struct argument **list, const char *key, const char *value)
     if (!xa)
         return -errno;
 
-    xa->key = strdup(key);
-    xa->value = strdup(value);
+    xa->key = key;
+    xa->value = value;
     xa->next = NULL;
 
     if (!xa->key || !xa->value) {
@@ -149,6 +153,21 @@ int argument_add(struct argument **list, const char *key, const char *value)
     *list = xa;
 
     return 0;
+}
+
+/*
+ * Append the given @key and @value pair to the argument list given by @list.
+ * @key and @value are duped, and so can be freed after calling.
+ * @return 0 on success. -errno on failure.
+ */
+int argument_add_string(struct argument **list, const char *key, const char *value)
+{
+    char* str_val;
+
+    if (asprintf(&str_val, "\"%s\"", value) < 0)
+        return -errno;
+
+    return argument_add_raw(list, strdup(key), str_val);
 }
 
 /*

@@ -16,7 +16,7 @@ int write_all(int fd, const void *buf, size_t count);
 
 int send_buf_and_fd(int socket, void *buf, int count, int fd_to_send);
 
-int argument_add(struct argument **list, const char *key, const char *value);
+int argument_add_string(struct argument **list, const char *key, const char *value);
 
 ssize_t strindex(const char * const *table, const char *item);
 

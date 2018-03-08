@@ -40,8 +40,9 @@ enum protocol {
 };
 
 enum state {
-    not_done,
-    started,
+    not_ready, /* Initial value for for qemu (pre negotiation) */
+    not_done,  /* initial value for all but qemu */
+    started,   /* restore started */
     live_done,
     all_done,
     result_sent
@@ -77,6 +78,7 @@ struct emu {
     unsigned int waitfor_size;
     pid_t pid;
     enum protocol proto;
+    int proto_version;
     int enabled;
 
     int exp_total;
@@ -107,7 +109,8 @@ struct stream_fd {
     int refs;
 };
 
-#define CONTROL_PATH "/var/xen/%s/%d/control"
+#define EMP_CONTROL_PATH "/var/xen/%s/%d/control"
+#define QMP_CONTROL_PATH "/var/run/xen/qmp-libxl-%d"
 
 #define XENOPSD_TIMEOUT 120
 #define XENOPSD_MSG_SIZE 128      /* maximum size of a message */
@@ -182,7 +185,7 @@ struct emu emus[] = {
         .enabled = FULL_NONLIVE,
         .exp_total = 10,
         .stream = NULL,
-        .status = not_done,
+        .status = not_ready,
         .iter = -1
     },
 };
@@ -192,13 +195,15 @@ struct emu emus[] = {
 
 static int restore_emu(struct emu *emu);
 static struct emu *find_emu_by_name(const char *name);
+static int wait_on_condition(bool (*check)(struct emu *emu));
+static bool check_and_respond_qemu_negotiation(struct emu *emu);
 
 /*
  * Check streams fds are safe to use.
- * A stream with random write access allows for diffrent processes to
- * inadvertently write over each others data, resulting in curruption.
- * This can occure without any seeking - simply due to metadata
- * cacheing issues.
+ * A stream with random write access allows for different processes to
+ * inadvertently write over each others data, resulting in corruption.
+ * This can occur without any seeking - simply due to metadata
+ * caching issues.
  */
 static int check_stream_fd(int fd)
 {
@@ -300,7 +305,7 @@ static int free_stream(struct emu *emu)
             log_info("Closing fd %d, before freeing for %s", fd->fd, emu->name);
             rc = close_retry(fd->fd);
             if (rc)
-                 log_err("Failed to close strem fd for emu %s:", emu->name, strerror(-rc));
+                 log_err("Failed to close stream fd for emu %s:", emu->name, strerror(-rc));
         }
         free(fd);
     }
@@ -327,7 +332,7 @@ static int set_used_stream(struct emu *emu)
 
         rc = close_retry(fd->fd);
         if (rc) {
-            log_err("Failed to close strem fd for emu %s", emu->name);
+            log_err("Failed to close stream fd for emu %s", emu->name);
             return rc;
         }
         fd->state |= FD_CLOSED;
@@ -798,7 +803,7 @@ static void parse_args(int argc, char *argv[])
             break;
         case arg_xg_store_port:
         case arg_xg_console_port:
-            rc = argument_add(&emus[0].extra, args[arg_index].name, optarg);
+            rc = argument_add_string(&emus[0].extra, args[arg_index].name, optarg);
             if (rc) {
                 log_err("Error adding xenguest argument: %d, %s",
                         -rc, strerror(-rc));
@@ -996,14 +1001,14 @@ static int update_progress(void)
  * Calculate the updated progress and send it to xenopsd.
  * @return 0 on success. -errno on failure.
  */
-static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
+static int emp_event_cb(em_client_t *cli, const char *event, json_object *data)
 {
     struct emu *emu = cli->data;
     int64_t rem = -1;
     int64_t sent = -1;
     int iter = -1;
 
-    log_debug("Processing event from em-client");
+    log_debug("Processing emp event from %s", emu->name);
 
     if (strcmp(event, "MIGRATION")) {
         log_err("Unknown event type: %s", event);
@@ -1087,6 +1092,28 @@ static int emu_event_cb(em_client_t *cli, const char *event, json_object *data)
     return 0;
 }
 
+
+/*
+ * Process @event from em client @cli with data given by @data.
+ * Calculate the updated progress and send it to xenopsd.
+ * @return 0 on success. -errno on failure.
+ */
+static int qmp_event_cb(em_client_t *cli, const char *event, json_object *data)
+{
+    (void) data;
+    log_debug("Processing event from QMP client");
+
+    if (!strcmp(event, "QMP")) {
+        struct emu *emu = cli->data;
+
+        log_info("Got QMP version negotiation");
+        emu->proto_version = 1;
+        return 0;
+    }
+    log_err("Ignoring QMP event %s", event);
+    return 0;
+}
+
 /*
  * Start all emus that need to be started.
  * @return 0 on success. -errno on failure.
@@ -1123,16 +1150,32 @@ static int startup_emus(void)
  * Open a connection to @emu.
  * @return 0 on success. -errno on failure.
  */
-static int connect_emu(struct emu *emu)
+static int connect_emp(struct emu *emu)
 {
     char path[64];
     int rc;
 
-    rc = snprintf(path, sizeof(path), CONTROL_PATH, emu->name, domid);
+    rc = snprintf(path, sizeof(path), EMP_CONTROL_PATH, emu->name, domid);
     if (rc < 0)
         return -errno;
 
-    rc = em_client_alloc(&emu->client, emu_event_cb, emu);
+    rc = em_client_alloc(&emu->client, emp_event_cb, emu);
+    if (rc)
+        return rc;
+
+    return em_client_connect(emu->client, path);
+}
+
+static int connect_qmp(struct emu *emu)
+{
+    char path[64];
+    int rc;
+
+    rc = snprintf(path, sizeof(path), QMP_CONTROL_PATH, domid);
+    if (rc < 0)
+        return -errno;
+
+    rc = em_client_alloc(&emu->client, qmp_event_cb, emu);
     if (rc)
         return rc;
 
@@ -1146,7 +1189,7 @@ static int connect_emu(struct emu *emu)
 static int connect_emus(void)
 {
     int i;
-    int rc;
+    int rc = EINVAL;
     struct emu *emu;
 
     for (i = 0; i < num_emus; i++) {
@@ -1156,17 +1199,19 @@ static int connect_emus(void)
 
         switch (emu->proto) {
         case emp:
-            if ((rc = connect_emu(emu))) {
-                log_err("Failed to connect to %s: %d, %s",
-                        emu->name, -rc, strerror(-rc));
-                return rc;
-            }
+            rc = connect_emp(emu);
             break;
         case qmp:
-            abort();
+            rc = connect_qmp(emu);
             break;
         }
-    }
+
+        if (rc) {
+            log_err("Failed to connect to %s: %d, %s",
+                    emu->name, -rc, strerror(-rc));
+            return rc;
+        }
+     }
     return 0;
 }
 
@@ -1190,13 +1235,13 @@ static int init_emus(void)
         stream = emu->stream;
 
         if (stream && stream->remaining_uses == 0) {
-            log_err("Attempted to use a stream FD who's remaning uses is already 0");
+            log_err("Attempted to use a stream FD who's remaining uses is already 0");
             return -EINVAL;
         }
 
         switch (emu->proto) {
         case emp:
-            rc = em_client_send_cmd_fd(emu->client, cmd_migrate_init,
+            rc = emp_client_send_cmd_fd(emu->client, cmd_migrate_init,
                                        stream ? stream->fd : -1);
             if (rc)
                 return rc;
@@ -1208,7 +1253,7 @@ static int init_emus(void)
             }
 
             if (emu->extra) {
-                rc = em_client_send_cmd_args(emu->client, cmd_set_args,
+                rc = emp_client_send_cmd_args(emu->client, cmd_set_args,
                                              emu->extra);
                 if (rc)
                     return rc;
@@ -1216,7 +1261,12 @@ static int init_emus(void)
 
             break;
         case qmp:
-            abort();
+
+            log_debug("Wait for QEMU");
+            rc = wait_on_condition(check_and_respond_qemu_negotiation);
+            if (rc)
+                return rc;
+            log_debug("QEMU ready");
             break;
         }
     }
@@ -1240,17 +1290,22 @@ static int request_track_emus(void)
 
         switch (emu->proto) {
         case emp:
-            rc = em_client_send_cmd(emu->client, cmd_track_dirty);
+            rc = emp_client_send_cmd(emu->client, cmd_track_dirty);
             if (rc)
                 return rc;
 
-            rc = em_client_send_cmd(emu->client, cmd_migrate_progress);
+            rc = emp_client_send_cmd(emu->client, cmd_migrate_progress);
             if (rc)
                 return rc;
 
             break;
         case qmp:
-            abort();
+            do {
+                struct argument arg = {.key = "enable", .value= "true", .next = NULL};
+                rc = qmp_client_send_cmd_args(emu->client, cmd_xen_set_global_dirty_log, &arg);
+            } while (0);
+            if (rc)
+                return rc;
             break;
         }
     }
@@ -1271,7 +1326,7 @@ static int restore_emu(struct emu *emu)
     if (set_stream_busy(emu, true))
         return -EINVAL;
 
-    return em_client_send_cmd(emu->client, cmd_restore);
+    return emp_client_send_cmd(emu->client, cmd_restore);
 }
 
 /*
@@ -1298,7 +1353,7 @@ static int migrate_live_emus(void)
             return rc;
         }
 
-        rc = em_client_send_cmd(emus[i].client, cmd_migrate_live);
+        rc = emp_client_send_cmd(emus[i].client, cmd_migrate_live);
         if (rc)
             return rc;
     }
@@ -1319,7 +1374,7 @@ static int pause_emus(void)
         if (!(emus[i].enabled & STAGE_PAUSE))
             continue;
 
-        rc = em_client_send_cmd(emus[i].client, cmd_migrate_pause);
+        rc = emp_client_send_cmd(emus[i].client, cmd_migrate_pause);
         if (rc)
             return rc;
     }
@@ -1340,7 +1395,7 @@ static int migrate_paused(void)
         if (!(emus[i].enabled & STAGE_PAUSED))
             continue;
 
-        rc = em_client_send_cmd(emus[i].client, cmd_migrate_paused);
+        rc = emp_client_send_cmd(emus[i].client, cmd_migrate_paused);
         if (rc)
             return rc;
     }
@@ -1363,7 +1418,7 @@ static int migrate_end(void)
     for (i = 0; i < num_emus; i++) {
         if (emus[i].client) {
             if (emus[i].client->fd >= 0 && emus[i].startup) {
-                ret = em_client_send_cmd(emus[i].client, cmd_quit);
+                ret = emp_client_send_cmd(emus[i].client, cmd_quit);
                 if (ret && !rc)
                     rc = ret;
             }
@@ -1423,7 +1478,7 @@ static int wait_for_event(void)
                 log_err("xenopsd: Unexpected EOF on control fd\n");
                 return -EPIPE;
             } else if (rc < 0) {
-                log_err("xenospd read error: %d, %s\n", -rc, strerror(-rc));
+                log_err("xenopsd read error: %d, %s\n", -rc, strerror(-rc));
                 return rc;
             }
             rc = xenopsd_process();
@@ -1458,25 +1513,50 @@ static int wait_for_event(void)
 }
 
 /* Returns true if @emu is live and has not yet finished. False otherwise. */
-static bool check_live_not_finished(const struct emu *emu)
+static bool check_live_not_finished(struct emu *emu)
 {
     return (emu->enabled & STAGE_LIVE) && emu->status != all_done;
 }
 
 /*
- * Returns true if @emu supports indicating readyness but is not yet ready.
+ * Returns true if @emu supports indicating readiness but is not yet ready.
  * False otherwise.
  */
-static bool check_not_ready(const struct emu *emu)
+static bool check_not_ready(struct emu *emu)
 {
     return (emu->enabled & STAGE_READY) && emu->status == not_done;
+}
+
+/*
+ * Capability negotiation requires waiting for QEMU to send a
+ * version string, and in response to this, send a qmp_capabilities
+ * command.  This function checks to see if the proto_version has
+ * set, and if so, it sends the command, and updates the emu status
+ * (preventing multiple issues of the command).
+ * This can be used by wait_on_condition to negotiate many qemus
+ * in parallel.
+ */
+
+static bool check_and_respond_qemu_negotiation(struct emu *emu)
+{
+    if (emu->proto != qmp)
+        return false;
+
+    if (emu->proto_version == 0)
+        return true;
+
+    if (emu->status == not_ready) {
+        qmp_client_send_cmd(emu->client, cmd_qmp_capabilities);
+        emu->status = not_done;
+    }
+    return false;
 }
 
 /*
  * Wait for @check to return false for every emu.
  * @return 0 on success. -errno on failure.
  */
-static int wait_on_condition(bool (*check)(const struct emu *emu))
+static int wait_on_condition(bool (*check)(struct emu *emu))
 {
     int i;
     int rc;
@@ -1507,7 +1587,7 @@ static int wait_on_condition(bool (*check)(const struct emu *emu))
 }
 
 /*
- * Sequentially save each nonlive emu and wait for completion.
+ * Sequentially save each non-live emu and wait for completion.
  * @return 0 on success. -errno on failure.
  */
 static int save_nonlive_one_by_one(void)
@@ -1527,7 +1607,7 @@ static int save_nonlive_one_by_one(void)
         if (rc < 0)
             return rc;
 
-        rc = em_client_send_cmd(emus[i].client, cmd_migrate_nonlive);
+        rc = emp_client_send_cmd(emus[i].client, cmd_migrate_nonlive);
         if (rc < 0)
             return rc;
 
@@ -1556,9 +1636,20 @@ static void configure_emus(void)
     for (i = 0; i < num_emus; i++) {
         if (emus[i].enabled & STAGE_ENABLED) {
             log_info("%s is enabled", emus[i].name);
-            if (!live_migrate)
-                emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) &
-                                  ~(STAGE_LIVE | STAGE_READY);
+
+            switch (emus[i].proto) {
+            case emp:
+                if (!live_migrate) {
+                    emus[i].enabled = (emus[i].enabled | STAGE_STOPCOPY ) &
+                                      ~(STAGE_LIVE | STAGE_READY);
+                }
+                break;
+            case qmp:
+                if (operation_mode == op_restore || operation_mode == op_pvrestore)
+                    emus[i].enabled = 0;
+                break;
+            }
+
         } else {
             emus[i].enabled = 0;
         }
@@ -1599,7 +1690,7 @@ static void wait_for_children(void)
     alarm(CMD_TERM_TIMEOUT);
 
     log_debug("emus left = %d", emu_pids_remaining);
-    /* Wait politly for children to terminate */
+    /* Wait politely for children to terminate */
     while (!out_of_time && emu_pids_remaining > 0) {
         log_debug("waiting for children");
         pid = wait(&status);
@@ -1736,7 +1827,7 @@ static int migrate_abort(void)
             switch (emus[i].proto) {
             case emp:
                 if (emus[i].client && emus[i].client->fd >= 0) {
-                    ret = em_client_send_cmd(emus[i].client, cmd_migrate_abort);
+                    ret = emp_client_send_cmd(emus[i].client, cmd_migrate_abort);
                     if (ret && !rc)
                         rc = ret;
                 }
@@ -1909,7 +2000,7 @@ int main(int argc, char *argv[])
 
     switch (operation_mode) {
     case op_pvsave:
-        rc = argument_add(&emus[0].extra, "pv", "true");
+        rc = argument_add_string(&emus[0].extra, "pv", "true");
         if (rc) {
             log_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
             return 1;
@@ -1918,7 +2009,7 @@ int main(int argc, char *argv[])
     case op_save:
         return operation_save() ? 2 : 0;
     case op_pvrestore:
-        rc = argument_add(&emus[0].extra, "pv", "true");
+        rc = argument_add_string(&emus[0].extra, "pv", "true");
         if (rc) {
             log_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
             return 1;
