@@ -851,6 +851,13 @@ static struct emu *find_emu_by_name(const char *name)
     return NULL;
 }
 
+static bool is_emu_enabled(const char *name)
+{
+   struct emu *found_emu = find_emu_by_name(name);
+
+   return found_emu->enabled;
+}
+
 /* Given @command, a list of program arguments, substitute all parameterized
  * arguments. This modifies @command.
  * @return 0 on success. -errno on failure.
@@ -1629,7 +1636,7 @@ static int save_nonlive_one_by_one(void)
 }
 
 /* Set up the enabled stages for each emu. */
-static void configure_emus(void)
+static int configure_emus(void)
 {
     int i;
 
@@ -1654,6 +1661,19 @@ static void configure_emus(void)
             emus[i].enabled = 0;
         }
     }
+
+    if (is_emu_enabled("vgpu")) {
+        struct emu *xenguest = find_emu_by_name("xenguest");
+        int rc;
+
+        assert(xenguest);
+        rc = argument_add_string(&xenguest->extra, "vgpu", "true");
+        if (rc) {
+            log_err("Error adding vgpu argument: %d, %s", -rc, strerror(-rc));
+            return rc;
+        }
+    }
+    return 0;
 }
 
 static int out_of_time;
@@ -1744,7 +1764,9 @@ static int operation_load(void)
     int remaining = 0;
 
     log_debug("Phase: configure_emus");
-    configure_emus();
+    rc = configure_emus();
+    if (rc)
+        goto out;
 
     log_debug("Phase: startup_emus");
     rc = startup_emus();
