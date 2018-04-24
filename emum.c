@@ -1280,6 +1280,38 @@ static int init_emus(void)
     return 0;
 }
 
+static int disconnect_emu(int emu_i)
+{
+    int rc = 0;
+    int ret;
+    struct emu *emu;
+
+    assert(emu_i >= 0 && emu_i < num_emus);
+    emu = &emus[emu_i];
+
+    if (emu->client) {
+        if (emu->client->fd >= 0 && emu->startup) {
+            ret = emp_client_send_cmd(emu->client, cmd_quit);
+            if (ret && !rc)
+                rc = ret;
+        }
+
+        ret = em_client_free(emu->client);
+        if (ret && !rc)
+            rc = ret;
+        emu->client = NULL;
+    }
+
+    ret = free_stream(emu);
+    if (ret && !rc) {
+        log_err("Failed to free stream for %s", emu->name);
+        rc = ret;
+    }
+
+    emu->enabled = false;
+    return rc;
+}
+
 /*
  * Enable dirty page tracking and progress reporting for live emus.
  * @return 0 on success. -errno on failure.
@@ -1307,10 +1339,15 @@ static int request_track_emus(void)
 
             break;
         case qmp:
-            do {
+            {
                 struct argument arg = {.key = "enable", .value= "true", .next = NULL};
                 rc = qmp_client_send_cmd_args(emu->client, cmd_xen_set_global_dirty_log, &arg);
-            } while (0);
+            }
+
+            /* This is the last command, so can close connection */
+            if (!rc)
+                rc = disconnect_emu(i);
+
             if (rc)
                 return rc;
             break;
@@ -1423,21 +1460,9 @@ static int migrate_end(void)
     int rc = 0;
 
     for (i = 0; i < num_emus; i++) {
-        if (emus[i].client) {
-            if (emus[i].client->fd >= 0 && emus[i].startup) {
-                ret = emp_client_send_cmd(emus[i].client, cmd_quit);
-                if (ret && !rc)
-                    rc = ret;
-            }
-            ret = em_client_free(emus[i].client);
-            if (ret && !rc)
-                rc = ret;
-        }
-        ret = free_stream(&emus[i]);
-        if (ret && !rc) {
-           log_err("Failed to free stream for %s", emus[i].name);
-           rc = ret;
-        }
+        ret = disconnect_emu(i);
+        if (ret && !rc)
+            rc = ret;
     }
     return rc;
 }
