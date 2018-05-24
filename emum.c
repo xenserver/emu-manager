@@ -1677,7 +1677,7 @@ static int configure_emus(void)
                 }
                 break;
             case qmp:
-                if (operation_mode == op_restore || operation_mode == op_pvrestore)
+                if (operation_mode == op_restore || operation_mode == op_pvrestore || !live_migrate)
                     emus[i].enabled = 0;
                 break;
             }
