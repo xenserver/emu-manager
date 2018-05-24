@@ -552,10 +552,10 @@ static int xenopsd_send_message_with_ack(const char *msg)
     do {
         rc = xenopsd_read(XENOPSD_TIMEOUT);
         if (rc == 0) {
-            log_err("xenopsd: Unexpected EOF on control fd.\n");
+            log_err("xenopsd: Unexpected EOF on control fd after sending '%s'.\n", msg);
             return -EPIPE;
         } else if (rc < 0) {
-            log_err("xenopsd read error: %d, %s\n", -rc, strerror(-rc));
+            log_err("xenopsd read error after sending '%s': %d, %s\n", msg, -rc, strerror(-rc));
             return rc;
         }
 
