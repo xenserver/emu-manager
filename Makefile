@@ -27,7 +27,7 @@ CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d
 
 DEPS     = .*.d
 
-LDFLAGS += -g $$(pkg-config --libs json-c) -lempserver
+LDFLAGS += -g $$(pkg-config --libs json-c) -lempserver -lpthread
 
 all: $(TARGET)
 
