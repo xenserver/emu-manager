@@ -115,6 +115,7 @@ struct stream_fd {
 #define XENOPSD_TIMEOUT 120
 #define XENOPSD_MSG_SIZE 128      /* maximum size of a message */
 #define XENOPSD_RESTORE_MSG "restore:"
+#define XENOPSD_ABORT_MSG "abort"
 #define XENOPSD_ACK_MSG "done"
 
 #define CMD_START_TIMEOUT 60 * 3
@@ -436,14 +437,14 @@ static int xenopsd_process_message(const char *msg)
 {
     log_debug("xenopsd: Processing '%s'", msg);
 
-    if (!strcmp(msg, XENOPSD_ACK_MSG)) {
+    if (!strncmp(msg, XENOPSD_ACK_MSG, sizeof(XENOPSD_ACK_MSG))) {
         if (!xenopsd_needs_ack) {
             log_err("Unexpected ACK received from xenopsd");
             return -EINVAL;
         }
         xenopsd_needs_ack = false;
         return 0;
-    } else if (!strncmp(msg, XENOPSD_RESTORE_MSG, strlen(XENOPSD_RESTORE_MSG))) {
+    } else if (!strncmp(msg, XENOPSD_RESTORE_MSG, sizeof(XENOPSD_RESTORE_MSG))) {
         struct emu *emu;
 
         msg += strlen(XENOPSD_RESTORE_MSG);
@@ -455,6 +456,9 @@ static int xenopsd_process_message(const char *msg)
         }
 
         return restore_emu(emu);
+    }  else if (!strncmp(msg, XENOPSD_ABORT_MSG, sizeof(XENOPSD_ABORT_MSG))) {
+        log_debug("xenopsd: Received abort command");
+        return -ESHUTDOWN;
     }
 
     log_err("Unexpected message from xenopsd: %s", msg);
@@ -1392,8 +1396,9 @@ static int migrate_live_emus(void)
 
         rc = xenopsd_send_prepare(&emus[i]);
         if (rc < 0) {
-            log_err("Failed to prepare stream for %s: %d, %s\n",
-                    emus[i].name, -rc, strerror(-rc));
+            if (rc != -ESHUTDOWN)
+                log_err("Failed to prepare stream for %s: %d, %s\n",
+                        emus[i].name, -rc, strerror(-rc));
             return rc;
         }
 
@@ -1606,8 +1611,9 @@ static int wait_on_condition(bool (*check)(struct emu *emu))
 
         rc = wait_for_event();
         if (rc < 0 && rc != -ETIME) {
-            log_err("Error waiting for events: %d, %s",
-                    -rc, strerror(-rc));
+            if (rc != -ESHUTDOWN)
+                log_err("Error waiting for events: %d, %s",
+                        -rc, strerror(-rc));
             return rc;
         }
         rc = update_progress();
@@ -1817,8 +1823,9 @@ static int operation_load(void)
     while (remaining) {
         rc = wait_for_event();
         if (rc < 0 && rc != -ETIME) {
-            log_err("Error waiting for events: %d, %s",
-                    -rc, strerror(-rc));
+            if (rc != -ESHUTDOWN)
+                log_err("Error waiting for events: %d, %s",
+                        -rc, strerror(-rc));
             goto out;
         }
 
@@ -1844,15 +1851,15 @@ out:
 
     wait_for_children();
 
-    if (rc) {
+    if (rc && rc != -ESHUTDOWN) {
         end_rc = xenopsd_send_error_result(-rc);
 
         if (end_rc)
             log_err("sending error to xenopsd failed: %d, %s",
                     -end_rc, strerror(-end_rc));
+        return rc;
     }
-
-    return rc;
+    return 0;
 }
 
 /*
@@ -1980,14 +1987,14 @@ out:
 
     wait_for_children();
 
-    if (rc) {
+    if (rc && rc != -ESHUTDOWN) {
         end_rc = xenopsd_send_error_result(-rc);
         if (end_rc)
             log_err("sending error to xenopsd failed: %d, %s",
                     -end_rc, strerror(-end_rc));
+        return rc;
     }
-
-    return rc;
+    return 0;
 }
 
 /*
