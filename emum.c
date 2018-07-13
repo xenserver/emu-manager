@@ -444,7 +444,8 @@ static int xenopsd_process_message(const char *msg)
         }
         xenopsd_needs_ack = false;
         return 0;
-    } else if (!strncmp(msg, XENOPSD_RESTORE_MSG, sizeof(XENOPSD_RESTORE_MSG))) {
+    /* Check for "restore:" followed by <argument>. Don't compare \0 to allow argument. */
+    } else if (!strncmp(msg, XENOPSD_RESTORE_MSG, sizeof(XENOPSD_RESTORE_MSG) - 1)) {
         struct emu *emu;
 
         msg += strlen(XENOPSD_RESTORE_MSG);
