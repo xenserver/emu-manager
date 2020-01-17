@@ -12,6 +12,8 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <syslog.h>
+#include <libempserver.h>
+#include <linux/limits.h>
 
 #include "lib.h"
 #include "em-client.h"
@@ -109,7 +111,6 @@ struct stream_fd {
     int refs;
 };
 
-#define EMP_CONTROL_PATH "/var/xen/%s/%d/control"
 #define QMP_CONTROL_PATH "/var/run/xen/qmp-libxl-%d"
 
 #define XENOPSD_TIMEOUT 120
@@ -1164,12 +1165,15 @@ static int startup_emus(void)
  */
 static int connect_emp(struct emu *emu)
 {
-    char path[64];
+    char path[PATH_MAX];
     int rc;
 
-    rc = snprintf(path, sizeof(path), EMP_CONTROL_PATH, emu->name, domid);
+    rc = emp_get_default_path(path, sizeof(path), emu->name, domid);
     if (rc < 0)
         return -errno;
+
+    if (rc > (int) sizeof(path))
+        return -ENOMEM;
 
     rc = em_client_alloc(&emu->client, emp_event_cb, emu);
     if (rc)
