@@ -1096,7 +1096,7 @@ static int emp_event_cb(em_client_t *cli, const char *event, json_object *data)
         log_info("Event for %s: rem %"PRId64", sent %"PRId64", iter %d, %s. Progress = %d",
                  emu->name, rem, sent, iter,
                  ready ? "waiting" : "not waiting", progress);
-        if ((iter > 0) && (rem < 50 || iter >= 4) && !ready) {
+        if ((iter > 0) && ((rem >= 0 && rem < 50) || iter >= 4) && !ready) {
             log_info("%s live stage is done", emu->name);
             emu->status = live_done;
         }
