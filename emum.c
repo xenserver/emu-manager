@@ -220,6 +220,10 @@ static int check_stream_fd(int fd)
     if (S_ISSOCK(statbuf.st_mode))
         return 0;
 
+    /* Pipes are safe, too */
+    if (S_ISFIFO(statbuf.st_mode))
+        return 0;
+
     r = fcntl(fd, F_GETFL);
     if (r == -1)
         return -errno;
