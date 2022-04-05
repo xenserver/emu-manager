@@ -69,7 +69,7 @@ int em_client_connect(em_client_t *cli, const char *path)
     assert(cli);
 
     if (strlen(path) >= sizeof(addr.sun_path))
-        return ENAMETOOLONG;
+        return -ENAMETOOLONG;
 
     fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {

@@ -54,6 +54,7 @@ enum stages {
     stage_enabled,
     stage_start,
     stage_init,
+    stage_track,
     stage_live,
     stage_ready,
     stage_pause,
@@ -64,14 +65,16 @@ enum stages {
 #define STAGE_ENABLED  (1 << stage_enabled)
 #define STAGE_START    (1 << stage_start)
 #define STAGE_INIT     (1 << stage_init)
+#define STAGE_TRACK    (1 << stage_track)
 #define STAGE_LIVE     (1 << stage_live)
 #define STAGE_READY    (1 << stage_ready)
 #define STAGE_PAUSE    (1 << stage_pause)
 #define STAGE_PAUSED   (1 << stage_paused)
 #define STAGE_STOPCOPY (1 << stage_stopcopy)
 
-#define FULL_LIVE    STAGE_START | STAGE_INIT | STAGE_LIVE  | STAGE_PAUSE | STAGE_PAUSED
-#define FULL_NONLIVE STAGE_START | STAGE_INIT | STAGE_PAUSE | STAGE_PAUSED | STAGE_STOPCOPY
+#define BASE_STAGES  STAGE_START | STAGE_INIT | STAGE_TRACK | STAGE_PAUSE | STAGE_PAUSED
+#define FULL_LIVE    BASE_STAGES | STAGE_LIVE
+#define FULL_NONLIVE BASE_STAGES | STAGE_STOPCOPY
 
 struct emu {
     char *name;
@@ -1209,7 +1212,7 @@ static int connect_qmp(struct emu *emu)
 static int connect_emus(void)
 {
     int i;
-    int rc = EINVAL;
+    int rc = -EINVAL;
     struct emu *emu;
 
     for (i = 0; i < num_emus; i++) {
@@ -1249,7 +1252,7 @@ static int init_emus(void)
         struct stream_fd *stream;
 
         emu = &emus[i];
-        if (!(emu->enabled && STAGE_INIT))
+        if (!(emu->enabled & STAGE_INIT))
             continue;
 
         stream = emu->stream;
@@ -1326,30 +1329,23 @@ static int disconnect_emu(int emu_i)
 }
 
 /*
- * Enable dirty page tracking and progress reporting for live emus.
+ * Enable dirty page tracking for emus.
  * @return 0 on success. -errno on failure.
  */
 static int request_track_emus(void)
 {
     int i;
-    int rc;
+    int rc = 0;
     struct emu *emu;
 
     for (i = 0; i < num_emus; i++) {
         emu = &emus[i];
-        if (!(emu->enabled && STAGE_LIVE))
+        if (!(emu->enabled & STAGE_TRACK))
             continue;
 
         switch (emu->proto) {
         case emp:
             rc = emp_client_send_cmd(emu->client, cmd_track_dirty);
-            if (rc)
-                return rc;
-
-            rc = emp_client_send_cmd(emu->client, cmd_migrate_progress);
-            if (rc)
-                return rc;
-
             break;
         case qmp:
             {
@@ -1360,11 +1356,39 @@ static int request_track_emus(void)
             /* This is the last command, so can close connection */
             if (!rc)
                 rc = disconnect_emu(i);
-
-            if (rc)
-                return rc;
             break;
         }
+        if (rc)
+            return rc;
+    }
+    return 0;
+}
+
+/*
+ * Enable progress reporting for live emus.
+ * @return 0 on success. -errno on failure.
+ */
+static int request_live_reporting(void)
+{
+    int i;
+    int rc = 0;
+    struct emu *emu;
+
+    for (i = 0; i < num_emus; i++) {
+        emu = &emus[i];
+        if (!(emu->enabled & STAGE_LIVE))
+            continue;
+
+        switch (emu->proto) {
+        case emp:
+            rc = emp_client_send_cmd(emu->client, cmd_migrate_progress);
+            break;
+        default:
+             log_err("Tried to enable live reporting for %s, without implementation", emu->name);
+             rc = -EPROTO;
+        }
+        if (rc)
+            return rc;
     }
     return 0;
 }
@@ -1935,6 +1959,11 @@ static int operation_save(void)
     if (live_migrate) {
         log_debug("Phase: request_track_emus");
         rc = request_track_emus();
+        if (rc)
+            goto out;
+
+        log_debug("Phase: request_live_reporting");
+        rc = request_live_reporting();
         if (rc)
             goto out;
 
