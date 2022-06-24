@@ -81,7 +81,7 @@ int em_client_connect(em_client_t *cli, const char *path)
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, path);
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
     log_info("em-client: connect to %s", addr.sun_path);
 
