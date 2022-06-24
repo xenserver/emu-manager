@@ -867,6 +867,9 @@ static bool is_emu_enabled(const char *name)
 {
    struct emu *found_emu = find_emu_by_name(name);
 
+   if (!found_emu)
+       return false;
+
    return found_emu->enabled;
 }
 
