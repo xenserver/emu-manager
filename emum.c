@@ -265,6 +265,12 @@ static int set_stream(struct emu *emu, int fd)
     if (c_fd == NULL) {
         int rc;
 
+        rc = check_stream_fd(fd);
+        if (rc) {
+            log_err("Failed to validate stream %d for %s: %s", fd, emu->name, strerror(-rc));
+            return rc;
+        }
+
         c_fd = malloc(sizeof(struct stream_fd));
         if (!c_fd) {
             log_err("Failed to alloc for stream_fd");
@@ -275,13 +281,6 @@ static int set_stream(struct emu *emu, int fd)
         c_fd->remaining_uses = 1;
         c_fd->refs = 1;
         c_fd->state = 0;
-
-        rc = check_stream_fd(fd);
-        if (rc) {
-            log_err("Failed to validate stream %d for %s: %s", fd, emu->name, strerror(-rc));
-            return rc;
-        }
-
     } else {
         c_fd->remaining_uses++;
         c_fd->refs++;
