@@ -138,6 +138,9 @@ static int domid = -1;
 static bool live_migrate;
 static int last_progress = -1;
 static enum operation_mode operation_mode = op_invalid;
+static char *traceparent;
+static char *tracestate;
+static bool traceenabled;
 
 #define EEMUM_DISCONNECT (-2)
 #define EEMUM_DIED       (-3)
@@ -665,6 +668,18 @@ static int xenopsd_send_error_result(int err)
 
 /* Functions for program startup. */
 
+static bool parse_bool(const char *str, const char *name)
+{
+    if (!strcmp(str, "true"))
+        return true;
+
+    if (!strcmp(str, "false"))
+        return false;
+
+    log_err("Bad bool value '%s' for '%s'", str, name);
+    exit(1);
+}
+
 /*
  * Parses an integer from a string given by @str. Except for whitespace at the
  * start, the string may not have leading or trailing characters that do not
@@ -742,7 +757,10 @@ static void parse_args(int argc, char *argv[])
         arg_xg_store_port,
         arg_xg_console_port,
         arg_fork,
-        arg_supports
+        arg_supports,
+        arg_traceparent,
+        arg_tracestate,
+        arg_trace
     };
 
     static const struct option args[] = {
@@ -758,6 +776,9 @@ static void parse_args(int argc, char *argv[])
         {"console_port", required_argument, NULL,   arg_xg_console_port},
         {"fork",         required_argument, NULL,   arg_fork},
         {"supports",     required_argument, NULL,   arg_supports},
+        {"traceparent",  required_argument, NULL,   arg_traceparent},
+        {"tracestate",   required_argument, NULL,   arg_tracestate},
+        {"trace",        required_argument, NULL,   arg_trace},
         {NULL},
     };
 
@@ -795,12 +816,7 @@ static void parse_args(int argc, char *argv[])
             domid = parse_int(optarg);
             break;
         case arg_live:
-            if (!strcmp(optarg, "true")) {
-                live_migrate = true;
-            } else if (strcmp(optarg, "false")) {
-                log_err("Unknown live argument: '%s'", optarg);
-                exit(1);
-            }
+            live_migrate = parse_bool(optarg, "live");
             break;
         case arg_dm:
             parse_dm_arg(optarg);
@@ -830,6 +846,15 @@ static void parse_args(int argc, char *argv[])
                 printf("true\n");
             else
                 printf("false\n");
+            break;
+        case arg_traceparent:
+            traceparent = optarg;
+            break;
+        case arg_tracestate:
+            tracestate = optarg;
+            break;
+        case arg_trace:
+            traceenabled = parse_bool(optarg, "trace");
             break;
         default:
             log_err("Error parsing arguments");
