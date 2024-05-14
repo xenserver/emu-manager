@@ -6,7 +6,7 @@ OBJS := \
 	lib.o \
 	qmp.o
 
-CFLAGS  = -I$(shell pwd) $$(pkg-config --cflags json-c)
+CFLAGS += -I$(shell pwd) $$(pkg-config --cflags json-c)
 
 ifeq ($(D), 1)
 CFLAGS += -g -O0 -DDEBUG_LOGGING

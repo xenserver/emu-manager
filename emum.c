@@ -2124,7 +2124,7 @@ int main(int argc, char *argv[])
             log_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
             return 1;
         }
-        /* fall though */
+        /* fall through */
     case op_save:
         return operation_save() ? 2 : 0;
     case op_pvrestore:
@@ -2133,7 +2133,7 @@ int main(int argc, char *argv[])
             log_err("Error adding pv argument: %d, %s", -rc, strerror(-rc));
             return 1;
         }
-        /* fall though */
+        /* fall through */
     case op_restore:
         return operation_load() ? 2 : 0;
     default:
