@@ -79,6 +79,7 @@ enum stages {
 struct emu {
     char *name;
     char **startup;
+    size_t startup_len;
     char *waitfor;
     unsigned int waitfor_size;
     pid_t pid;
@@ -141,6 +142,7 @@ static enum operation_mode operation_mode = op_invalid;
 static char *traceparent;
 static char *tracestate;
 static bool traceenabled;
+static int mem_pnode = -1;
 
 #define EEMUM_DISCONNECT (-2)
 #define EEMUM_DIED       (-3)
@@ -155,6 +157,10 @@ static char *emum_error_str[3] = {
     "exited with an error"
 };
 
+/* Arguments that are meant to be replaced are:
+ * - %d, to be replaced by the domain id
+ * - %m, to be replaced by a numa node id 
+ * */
 char *xenguest_args[] = {
     "/usr/libexec/xen/bin/xenguest",
     "-debug",
@@ -162,13 +168,16 @@ char *xenguest_args[] = {
     "-controloutfd", "2",
     "-controlinfd", "0",
     "-mode", "listen",
+    "-mem_pnode", "%m",
     NULL,
 };
+#define XG_ARGS_SZ (sizeof(xenguest_args) / sizeof(*xenguest_args))
 
 struct emu emus[] = {
     {
         .name = "xenguest",
         .startup = xenguest_args,
+        .startup_len = XG_ARGS_SZ,
         .waitfor = "Ready\n",
         .waitfor_size = 6,
         .proto = emp,
@@ -760,7 +769,8 @@ static void parse_args(int argc, char *argv[])
         arg_supports,
         arg_traceparent,
         arg_tracestate,
-        arg_trace
+        arg_trace,
+        arg_mem_pnode
     };
 
     static const struct option args[] = {
@@ -779,6 +789,7 @@ static void parse_args(int argc, char *argv[])
         {"traceparent",  required_argument, NULL,   arg_traceparent},
         {"tracestate",   required_argument, NULL,   arg_tracestate},
         {"trace",        required_argument, NULL,   arg_trace},
+        {"mem_pnode",    required_argument, NULL,   arg_mem_pnode},
         {NULL},
     };
 
@@ -856,6 +867,9 @@ static void parse_args(int argc, char *argv[])
         case arg_trace:
             traceenabled = parse_bool(optarg, "trace");
             break;
+        case arg_mem_pnode:
+            mem_pnode = parse_int(optarg);
+            break;
         default:
             log_err("Error parsing arguments");
             exit(1);
@@ -902,16 +916,31 @@ static bool is_emu_enabled(const char *name)
  * arguments. This modifies @command.
  * @return 0 on success. -errno on failure.
  */
-static int substitute_args(char **command)
+static int substitute_args(char **command, size_t cmd_len)
 {
+    char **cmd_0 = command;
+    size_t i;
+
     while (*command) {
         if (!strcmp(*command, "%d")) {
             if (asprintf(command, "%d", domid) < 0)
                 return -errno;
+        } else if (!strcmp(*command, "%m")) {
+            /* numa nodes are assumed to be an optional parameter and preceded
+             * by another parameter. If its value is the default one, remove
+             * both from the list. */
+            if (mem_pnode == -1) {
+                i = (command - cmd_0) / sizeof(char *);
+                memmove(command - 1, command + 1, cmd_len - i - 2);
+                command--; /* parse the (i-1)-th item, as we've overriden it */
+                continue;
+            }
+            if (asprintf(command, "%d", mem_pnode) < 0)
+                return -errno;
         }
         command++;
+        i++;
     }
-
     return 0;
 }
 
@@ -1174,7 +1203,7 @@ static int startup_emus(void)
         if (emus[i].startup) {
             log_info("Starting %s\n", emus[i].name);
 
-            rc = substitute_args(emus[i].startup);
+            rc = substitute_args(emus[i].startup, emus[i].startup_len);
             if (rc) {
                 log_err("Error substituting arguments for %s: %d, %s",
                         emus[i].name, -rc, strerror(-rc));
@@ -2114,6 +2143,8 @@ int main(int argc, char *argv[])
 
     log_info("Startup: xenopsd control fds (%d, %d)", xenopsd_in, xenopsd_out);
     log_info("Startup: domid %d", domid);
+    if (mem_pnode != -1)
+        log_info("Startup: mem_pnode %d", mem_pnode);
     log_info("Startup: operation mode: %s, %s", mode_names[operation_mode],
              live_migrate ? "live" : "non-live");
 
