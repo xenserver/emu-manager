@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
 #ifndef LIB_H
 #define LIB_H
 

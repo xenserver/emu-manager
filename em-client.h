@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
 #ifndef EM_CLIENT_H
 #define EM_CLIENT_H
 

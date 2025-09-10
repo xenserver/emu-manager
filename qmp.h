@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
 #ifndef QMP_H
 #define QMP_H
 

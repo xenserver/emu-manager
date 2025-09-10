@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
 #include "em-client.h"
 
 #include <stdlib.h>
