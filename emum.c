@@ -104,6 +104,13 @@ struct emu {
     uint64_t sent;
     uint64_t remaining;
     int iter;
+
+    /*
+     * Send the pause command as soon as the live_done state is reached.
+     * This may be useful to avoid the live copy slowing down the VM's suspend
+     * operations.
+     */
+    bool fast_pause;
 };
 
 struct stream_fd {
@@ -187,7 +194,8 @@ struct emu emus[] = {
         .exp_total = 1000000,
         .stream = NULL,
         .status = not_done,
-        .iter = -1
+        .iter = -1,
+        .fast_pause = true,
     },
     {
         .name = "vgpu",
@@ -1652,6 +1660,18 @@ static bool check_live_not_finished(struct emu *emu)
  */
 static bool check_not_ready(struct emu *emu)
 {
+    if (emu->status == live_done && emu->fast_pause) {
+        int rc;
+
+        emu->fast_pause = false;
+
+        rc = emp_client_send_cmd(emu->client, cmd_migrate_pause);
+        if (rc)
+            log_err("Error sending fast pause: %d, %s", -rc, strerror(-rc));
+        else
+            emu->enabled &= ~STAGE_PAUSE;
+    }
+
     return (emu->enabled & STAGE_READY) && emu->status == not_done;
 }
 
@@ -1794,6 +1814,8 @@ static int configure_emus(void)
             log_err("Error adding vgpu argument: %d, %s", -rc, strerror(-rc));
             return rc;
         }
+
+        xenguest->fast_pause = false;
     }
     return 0;
 }
