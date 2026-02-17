@@ -780,7 +780,8 @@ static void parse_args(int argc, char *argv[])
         arg_traceparent,
         arg_tracestate,
         arg_trace,
-        arg_mem_pnode
+        arg_mem_pnode,
+        arg_compress
     };
 
     static const struct option args[] = {
@@ -800,6 +801,7 @@ static void parse_args(int argc, char *argv[])
         {"tracestate",   required_argument, NULL,   arg_tracestate},
         {"trace",        required_argument, NULL,   arg_trace},
         {"mem_pnode",    required_argument, NULL,   arg_mem_pnode},
+        {"compress",     required_argument, NULL,   arg_compress},
         {NULL},
     };
 
@@ -879,6 +881,14 @@ static void parse_args(int argc, char *argv[])
             break;
         case arg_mem_pnode:
             mem_pnode = parse_int(optarg);
+            break;
+        case arg_compress:
+            rc = argument_add_string(&emus[0].extra, "compress", optarg);
+            if (rc) {
+                log_err("Error adding xenguest argument: %d, %s",
+                        -rc, strerror(-rc));
+                exit(1);
+            }
             break;
         default:
             log_err("Error parsing arguments");
